@@ -943,6 +943,11 @@ let touchDir = 0, isTouch = false;
 window.addEventListener('keydown', e=>{
   keys[e.key] = true;
   if(e.key===' ' || e.key==='ArrowUp') e.preventDefault();
+  if(state === 'who'){                          // a real keyboard works too
+    if(/^[a-zA-Z ]$/.test(e.key)) whoType(e.key);
+    else if(e.key === 'Backspace') whoName = whoName.slice(0,-1);
+    else if(e.key === 'Enter' && whoName.trim()) registerPlayer(fmtName(whoName));
+  }
 });
 window.addEventListener('keyup', e=>{ keys[e.key] = false; });
 
@@ -1993,19 +1998,46 @@ function drawButton(label, x, y, w, h, cb, opts){
 }
 
 /* ---- screens ---- */
-/* ---- first launch: who is playing? ---- */
+/* ---- first launch: write your name (with a pencil-drawn keyboard) ---- */
+let whoName = '';
+function fmtName(s){ return s.trim().replace(/^./, c=>c.toUpperCase()); }
+function whoType(chr){ if(whoName.length < 12){ whoName += chr.toLowerCase(); SFX.click(); } }
 function drawWho(){
   drawPaper(time*-20);
-  scribbleText('Whose notebook', W/2, 130, 36, {bold:true, rot:-0.02});
-  scribbleText('is this?', W/2, 175, 36, {bold:true, rot:0.015});
-  drawButton('Muntaha', W/2-105, 270, 210, 64, ()=>{ registerPlayer('Muntaha'); }, {size:26, ink:'#e2699e'});
-  drawButton('Anya', W/2-105, 356, 210, 64, ()=>{ registerPlayer('Anya'); }, {size:26, ink:'#8a6bc1'});
-  drawButton('Papa', W/2-105, 442, 210, 64, ()=>{ registerPlayer('Papa'); }, {size:26, ink:'#4a86c9'});
-  drawButton('someone else...', W/2-110, 530, 220, 50, ()=>{
-    const nm = (window.prompt('What is your name?') || '').trim().slice(0,16);
-    if(nm) registerPlayer(nm);
-  }, {size:17});
-  scribbleText('your game saves on this device, under your name', W/2, 630, 13, {alpha:0.55});
+  scribbleText('Whose notebook', W/2, 95, 34, {bold:true, rot:-0.02});
+  scribbleText('is this?', W/2, 135, 34, {bold:true, rot:0.015});
+  scribbleText('write your name:', W/2, 185, 16, {alpha:0.6});
+  // name box with blinking pencil caret
+  ctx.globalAlpha = 0.95; ctx.fillStyle = PAPER().hud; ctx.fillRect(70, 205, W-140, 56); ctx.globalAlpha = 1;
+  pencil(0.9, 2.4);
+  sketchRect(70, 205, W-140, 56, 900);
+  const caret = Math.floor(time*2)%2 ? '|' : ' ';
+  if(whoName) scribbleText(fmtName(whoName) + caret, W/2, 234, 26, {bold:true});
+  else scribbleText(caret === '|' ? '|' : '...', W/2, 234, 26, {alpha:0.35});
+  // hand-drawn keyboard
+  const rows = ['QWERTYUIOP','ASDFGHJKL','ZXCVBNM'];
+  const kw = 41, kh = 48, gap = 4;
+  rows.forEach((row, r)=>{
+    const total = row.length*(kw+gap)-gap;
+    const x0 = (W-total)/2;
+    const y = 292 + r*(kh+9);
+    for(let i=0;i<row.length;i++){
+      const chr = row[i];
+      const x = x0 + i*(kw+gap);
+      ctx.globalAlpha = 0.9; ctx.fillStyle = PAPER().hud; ctx.fillRect(x, y, kw, kh); ctx.globalAlpha = 1;
+      pencil(0.7, 1.8);
+      sketchRect(x, y, kw, kh, 910 + r*20 + i);
+      scribbleText(chr, x+kw/2, y+kh/2+1, 19, {bold:true});
+      uiButtons.push({x, y, w:kw, h:kh, cb:()=>{ whoType(chr); }});
+    }
+  });
+  const y4 = 292 + 3*(kh+9);
+  drawButton('space', 100, y4, 170, kh, ()=>{ whoType(' '); }, {size:15});
+  drawButton('⌫', 282, y4, 72, kh, ()=>{ whoName = whoName.slice(0,-1); SFX.click(); }, {size:20});
+  const ready = !!whoName.trim();
+  drawButton('DONE!', W/2-85, y4+kh+20, 170, 56, ()=>{ if(whoName.trim()) registerPlayer(fmtName(whoName)); },
+             {size:24, ink: ready ? '#4f9e58' : '#b9b2a0'});
+  scribbleText('your game saves on this device, under your name', W/2, H-58, 13, {alpha:0.55});
 }
 
 function drawTitle(){

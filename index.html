@@ -1,0 +1,2402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Muntaha &amp; Anya's Notebook — Bubble Hop</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:#b9b4a6;touch-action:none;-webkit-user-select:none;user-select:none;}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;}
+  canvas{display:block;box-shadow:0 8px 40px rgba(40,40,30,.45);border-radius:6px;background:#fbf7ec;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv"></canvas></div>
+<script>
+"use strict";
+/* ============================================================
+   BUBBLE HOP: PAPER JUMP  — from Muntaha's notebook
+   A living pencil-drawing vertical jumper.
+   Stage 1: engine + Level 1 (Muntaha & Anya playable)
+   ============================================================ */
+
+const W = 480, H = 800;
+const cv = document.getElementById('cv');
+let ctx = cv.getContext('2d');   // swapped temporarily when rendering silhouettes
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+function fitCanvas(){
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const s = Math.min(window.innerWidth / W, window.innerHeight / H);
+  cv.style.width  = (W * s) + 'px';
+  cv.style.height = (H * s) + 'px';
+  cv.width  = W * DPR;
+  cv.height = H * DPR;
+}
+fitCanvas();
+window.addEventListener('resize', fitCanvas);
+
+/* ---------------- palettes (color boxes swap these) -------- */
+const PALETTES = {
+  green : {name:'Meadow Green', main:'#4f9e58', soft:'#a8d5ac', bubble:'#7ec8e3', accent:'#e2b33c'},
+  pink  : {name:'Bubblegum Pink', main:'#e2699e', soft:'#f3b9d3', bubble:'#c39be0', accent:'#f0a24a'},
+  blue  : {name:'Sky Blue', main:'#4a86c9', soft:'#aecbea', bubble:'#79cdd4', accent:'#e2b33c'},
+  orange: {name:'Sunset Orange', main:'#e08a3c', soft:'#f2c9a0', bubble:'#e8a7c2', accent:'#7fb85a'},
+  purple: {name:'Berry Purple', main:'#8a6bc1', soft:'#c9b8e8', bubble:'#8fd0b6', accent:'#e2b33c'}
+};
+let paletteKey = 'green';
+function PAL(){ return PALETTES[paletteKey]; }
+
+/* ---------------- paper styles ("places" from chests) ------- */
+const PAPERS = {
+  ruled:    {name:'Ruled Paper',   bg:'#fbf7ec', hud:'#fdfbf2', line:'rgba(120,160,205,0.5)',  margin:'rgba(214,105,105,0.55)', ink:'#3a3f52', mode:'ruled', price:0},
+  graph:    {name:'Graph Paper',   bg:'#f6f9f3', hud:'#fbfdf8', line:'rgba(120,180,140,0.35)', margin:null,                     ink:'#3a3f52', mode:'grid',  price:100},
+  sticky:   {name:'Sticky Note',   bg:'#fdf0b0', hud:'#fdf5cd', line:'rgba(190,150,50,0.35)',  margin:null,                     ink:'#4a4433', mode:'ruled', price:120},
+  parchment:{name:'Old Parchment', bg:'#efe0c0', hud:'#f4e9d1', line:'rgba(150,120,70,0.25)',  margin:null,                     ink:'#4a3a26', mode:'blank', price:150},
+  chalk:    {name:'Chalkboard',    bg:'#2e3b36', hud:'#3a4a44', line:'rgba(255,255,255,0.13)', margin:'rgba(255,220,150,0.3)',  ink:'#e8e4d8', mode:'ruled', price:200}
+};
+function PAPER(){ return PAPERS[savePaperKey()] }
+function savePaperKey(){ return (typeof save==='object' && save && PAPERS[save.selectedPaper]) ? save.selectedPaper : 'ruled'; }
+let INK = '#3a3f52';             // graphite-blue pencil ink (chalk-white on chalkboard)
+function applyPaper(){
+  INK = PAPER().ink;
+  cv.style.background = PAPER().bg;
+}
+
+/* ---------------- tiny seeded wobble ----------------------- */
+let wob = 0;                      // wobble tick (~6/sec) — boiling-line effect
+function jit(seed, i, amp){
+  const v = Math.sin(seed * 127.1 + i * 269.5 + wob * 97.31) * 43758.5453;
+  return (v - Math.floor(v) - 0.5) * 2 * amp;
+}
+function rnd(seed, i){ const v = Math.sin(seed*91.7 + i*137.3)*24634.63; return v - Math.floor(v); }
+
+/* ---------------- sketchy pencil renderer ------------------ */
+function pencil(alpha, width, color){
+  ctx.strokeStyle = color || INK;
+  ctx.globalAlpha = alpha;
+  ctx.lineWidth = width;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+}
+function sketchLine(x1,y1,x2,y2, seed, amp){
+  amp = amp === undefined ? 1.6 : amp;
+  const dx = x2-x1, dy = y2-y1;
+  const len = Math.hypot(dx,dy);
+  const n = Math.max(2, Math.ceil(len/16));
+  for(let pass=0; pass<2; pass++){
+    ctx.beginPath();
+    for(let i=0;i<=n;i++){
+      const t = i/n;
+      const px = x1 + dx*t + jit(seed+pass*7, i, amp);
+      const py = y1 + dy*t + jit(seed+pass*7+3, i, amp);
+      i===0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
+    }
+    const ga = ctx.globalAlpha;
+    if(pass===1) ctx.globalAlpha = ga*0.35;
+    ctx.stroke();
+    ctx.globalAlpha = ga;
+  }
+}
+function sketchCircle(x,y,r, seed, amp){
+  amp = amp === undefined ? Math.min(2.2, r*0.09) : amp;
+  const n = Math.max(10, Math.ceil(r*0.7));
+  for(let pass=0; pass<2; pass++){
+    ctx.beginPath();
+    for(let i=0;i<=n;i++){
+      const a = (i/n) * Math.PI*2 - 0.35;   // start/end overlap gap feel
+      const rr = r + jit(seed+pass*11, i, amp);
+      const px = x + Math.cos(a)*rr, py = y + Math.sin(a)*rr;
+      i===0 ? ctx.moveTo(px,py) : ctx.lineTo(px,py);
+    }
+    const ga = ctx.globalAlpha;
+    if(pass===1) ctx.globalAlpha = ga*0.3;
+    ctx.stroke();
+    ctx.globalAlpha = ga;
+  }
+}
+function sketchRect(x,y,w,h, seed){
+  sketchLine(x,y, x+w,y, seed);
+  sketchLine(x+w,y, x+w,y+h, seed+1);
+  sketchLine(x+w,y+h, x,y+h, seed+2);
+  sketchLine(x,y+h, x,y, seed+3);
+}
+/* colored-pencil hatch fill inside a rect */
+function hatchRect(x,y,w,h,color,alpha){
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x,y,w,h); ctx.clip();
+  ctx.globalAlpha = alpha*0.35; ctx.fillStyle = color; ctx.fillRect(x,y,w,h);
+  ctx.globalAlpha = alpha; ctx.strokeStyle = color; ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  for(let i=-h; i<w; i+=7){
+    ctx.moveTo(x+i, y+h); ctx.lineTo(x+i+h, y);
+  }
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+function hatchCircle(x,y,r,color,alpha){
+  ctx.save();
+  ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.clip();
+  ctx.globalAlpha = alpha*0.3; ctx.fillStyle = color; ctx.fillRect(x-r,y-r,r*2,r*2);
+  ctx.globalAlpha = alpha*0.9; ctx.strokeStyle = color; ctx.lineWidth = 1.4;
+  ctx.beginPath();
+  for(let i=-2*r; i<r*2; i+=6){ ctx.moveTo(x-r+i, y+r); ctx.lineTo(x-r+i+2*r, y-r); }
+  ctx.stroke();
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+/* handwriting text */
+function scribbleText(txt, x, y, size, opts){
+  opts = opts || {};
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.rotate((opts.rot||0) + jit(txt.length*3+size,0,0.008));
+  ctx.font = (opts.bold?'bold ':'') + size + 'px "Comic Sans MS","Chalkboard SE","Segoe Print",cursive';
+  ctx.textAlign = opts.align || 'center';
+  ctx.textBaseline = 'middle';
+  if(opts.outline){
+    ctx.lineWidth = size/9; ctx.strokeStyle = '#fbf7ec'; ctx.globalAlpha = 0.9;
+    ctx.strokeText(txt, 0, 0);
+  }
+  ctx.globalAlpha = opts.alpha===undefined?1:opts.alpha;
+  ctx.fillStyle = opts.color || INK;
+  ctx.fillText(txt, 0, 0);
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* ---------------- paper background ------------------------- */
+const grain = document.createElement('canvas');
+grain.width = W; grain.height = H;
+(function makeGrain(){
+  const g = grain.getContext('2d');
+  for(let i=0;i<2600;i++){
+    g.fillStyle = 'rgba(120,110,90,' + (0.02+Math.random()*0.05) + ')';
+    g.fillRect(Math.random()*W, Math.random()*H, 1.5, 1.5);
+  }
+})();
+function drawPaper(camY){
+  const pp = PAPER();
+  applyPaper();
+  ctx.fillStyle = pp.bg;
+  ctx.fillRect(0,0,W,H);
+  const gap = 34;
+  const off = ((-camY*0.35) % gap + gap) % gap;
+  ctx.strokeStyle = pp.line; ctx.lineWidth = 1;
+  if(pp.mode === 'ruled' || pp.mode === 'grid'){
+    ctx.beginPath();
+    for(let y=off; y<H; y+=gap){ ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
+  }
+  if(pp.mode === 'grid'){
+    ctx.beginPath();
+    for(let x=8; x<W; x+=gap){ ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+    ctx.stroke();
+  }
+  if(pp.mode === 'blank'){
+    // parchment: rough blotches instead of lines
+    ctx.globalAlpha = 0.05; ctx.fillStyle = '#7a5c30';
+    for(let i=0;i<6;i++) { ctx.beginPath(); ctx.arc(60+rnd(3,i)*360, (rnd(4,i)*900 - camY*0.1)%H, 50+rnd(5,i)*60, 0, Math.PI*2); ctx.fill(); }
+    ctx.globalAlpha = 1;
+  }
+  if(pp.margin){
+    ctx.strokeStyle = pp.margin; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(42,0); ctx.lineTo(42,H); ctx.stroke();
+  }
+  if(savePaperKey() !== 'chalk') ctx.drawImage(grain,0,0);
+}
+
+/* ---------------- sound (WebAudio, no files) --------------- */
+let AC = null, muted = false;
+function audio(){ if(!AC){ try{ AC = new (window.AudioContext||window.webkitAudioContext)(); }catch(e){} } if(AC && AC.state==='suspended') AC.resume(); return AC; }
+function beep(freq, dur, type, vol, slide){
+  if(muted) return; const ac = audio(); if(!ac) return;
+  const o = ac.createOscillator(), g = ac.createGain();
+  o.type = type||'sine'; o.frequency.setValueAtTime(freq, ac.currentTime);
+  if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(30,freq+slide), ac.currentTime+dur);
+  g.gain.setValueAtTime(vol||0.15, ac.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime+dur);
+  o.connect(g); g.connect(ac.destination);
+  o.start(); o.stop(ac.currentTime+dur+0.02);
+}
+const SFX = {
+  boing(){ beep(190,0.22,'triangle',0.22, 240); },
+  bubble(){ beep(420,0.18,'sine',0.2, 260); },
+  pop(){ beep(680,0.09,'square',0.12,-500); beep(240,0.12,'triangle',0.12,-120); },
+  coin(){ beep(1150,0.09,'sine',0.16, 350); setTimeout(()=>beep(1560,0.12,'sine',0.13,200), 60); },
+  key(){ beep(760,0.1,'triangle',0.18,0); setTimeout(()=>beep(1010,0.14,'triangle',0.15,150), 90); },
+  magnet(){ beep(300,0.28,'sawtooth',0.08, 500); },
+  colorbox(){ [523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,0.14,'sine',0.14,0), i*70)); },
+  quest(){ [660,880,990,1320].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'triangle',0.16,0), i*90)); },
+  chest(){ [392,523,659,784,1047].forEach((f,i)=>setTimeout(()=>beep(f,0.2,'triangle',0.16,0), i*100)); },
+  fall(){ beep(500,0.5,'sine',0.15,-380); },
+  click(){ beep(880,0.05,'square',0.07,0); },
+  win(){ [523,659,784,1047,1319,1568].forEach((f,i)=>setTimeout(()=>beep(f,0.25,'triangle',0.17,0), i*110)); }
+};
+
+/* ---------------- play-data push (for Papa) -----------------
+   On first launch the game asks who is playing (or reads ?player=Name
+   from the link). The name tags every save AND the play reports pushed
+   to Papa's private ntfy topic: level clears + session summaries. */
+const NAME_KEY = 'bhPlayerName';
+let PLAYER_TAG = '';
+try{
+  const qp = new URLSearchParams(location.search).get('player');
+  if(qp) localStorage.setItem(NAME_KEY, qp.trim().slice(0,16));
+  PLAYER_TAG = localStorage.getItem(NAME_KEY) || '';
+}catch(e){}
+function registerPlayer(nm){
+  try{ localStorage.setItem(NAME_KEY, nm); }catch(e){}
+  location.reload();
+}
+const TELEMETRY_URL = ['https://ntfy.sh/', 'manote', 'book-papa-', '7kq2xv9r3m'].join('');
+const TQ_KEY = 'bubbleHopTQ' + (PLAYER_TAG ? '.' + PLAYER_TAG : '');
+let sessStart = Date.now();
+let sessLevels = {};              // this session: {level:{tries,wins,best}}
+let lastSummaryAt = 0;
+function sessLevel(n){ return sessLevels[n] = sessLevels[n] || {tries:0, wins:0, best:null}; }
+function tqueue(){ try{ return JSON.parse(localStorage.getItem(TQ_KEY)) || []; }catch(e){ return []; } }
+function tqSave(q){ try{ localStorage.setItem(TQ_KEY, JSON.stringify(q.slice(-40))); }catch(e){} }
+function tSend(title, body){
+  if(!PLAYER_TAG || !TELEMETRY_URL) return;
+  const q = tqueue(); q.push({t:title, b:body}); tqSave(q);
+  tFlush();
+}
+function tFlush(){
+  if(!PLAYER_TAG || !TELEMETRY_URL) return;
+  const q = tqueue();
+  if(!q.length) return;
+  const item = q[0];
+  fetch(TELEMETRY_URL + '?title=' + encodeURIComponent(item.t) + '&tags=video_game',
+        {method:'POST', body:item.b, mode:'no-cors'})
+    .then(()=>{ const q2 = tqueue(); q2.shift(); tqSave(q2); if(q2.length) setTimeout(tFlush, 900); })
+    .catch(()=>{});                      // offline: stays queued for next time
+}
+function tSessionSummary(){
+  if(!PLAYER_TAG || !TELEMETRY_URL) return;
+  if(Date.now() - lastSummaryAt < 60000) return;    // don't spam on quick tab flips
+  const mins = Math.round((Date.now() - sessStart)/6000)/10;
+  const parts = Object.keys(sessLevels).map(n=>{
+    const L = sessLevels[n];
+    return 'Level ' + n + ': ' + L.tries + (L.tries===1?' try':' tries') +
+           (L.wins ? ' — CLEARED' + (L.best ? ' in ' + fmtTime(L.best) : '') : '');
+  });
+  if(mins < 0.5 && !parts.length) return;
+  lastSummaryAt = Date.now();
+  const body = mins + ' min this session.\n' + (parts.join('\n') || '(menus only)') +
+    '\nAll-time: ' + Math.round((save.stats.playSec||0)/60) + ' min • ' + save.coins +
+    ' coins • reached Lv' + save.levelReached;
+  const url = TELEMETRY_URL + '?title=' + encodeURIComponent('📊 ' + PLAYER_TAG + ' — play session') + '&tags=bar_chart';
+  let sent = false;
+  if(navigator.sendBeacon){ try{ sent = navigator.sendBeacon(url, body); }catch(e){} }
+  if(!sent) tSend('📊 ' + PLAYER_TAG + ' — play session', body);
+  sessStart = Date.now(); sessLevels = {};
+}
+window.addEventListener('pagehide', ()=>{ try{ persist(); }catch(e){} tSessionSummary(); });
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState === 'hidden') tSessionSummary(); });
+window.addEventListener('online', tFlush);
+setTimeout(tFlush, 4000);               // flush anything left over from an offline session
+
+/* ---------------- save data -------------------------------- */
+const SAVE_KEY = 'bubbleHopPaperJump.v1' + (PLAYER_TAG ? '.' + PLAYER_TAG : '');
+const SAVE_DEFAULTS = {
+  coins: 0, keysHeld: 0, rainbowDrops: 0,
+  questSet: 0, questProgress: [0,0,0], set4Done: false,
+  selected: 'muntaha',
+  unlocked: {muntaha:true, anya:true},
+  pieces: {aisha:0, lily:0},
+  papers: ['ruled'], selectedPaper: 'ruled',
+  taken: {},          // one-time collectible ledger: {level:[itemIdx,...]}
+  chestsOpened: {},   // finish chests opened: {level:true}
+  bookmark: {},       // highest stamped bookmark per level (cleared on level win)
+  bestTime: {},       // fastest completion per level, in seconds
+  levelReached: 1, levelsDone: {},
+  secretsRevealed: false,
+  stats: {playSec:0, levels:{}},   // lifetime play data (also what gets pushed to Papa)
+  bestHeight: 0, level1Done: false, muted: false
+};
+let save = JSON.parse(JSON.stringify(SAVE_DEFAULTS));
+try{
+  const s = JSON.parse(localStorage.getItem(SAVE_KEY));
+  if(s && typeof s === 'object'){
+    save = Object.assign(save, s);
+    // deep-merge nested defaults so old saves upgrade cleanly
+    for(const k of ['unlocked','pieces','taken','chestsOpened','bookmark','levelsDone','bestTime','stats'])
+      save[k] = Object.assign(JSON.parse(JSON.stringify(SAVE_DEFAULTS[k])), s[k]||{});
+    if(!Array.isArray(save.papers) || !save.papers.length) save.papers = ['ruled'];
+  }
+}catch(e){}
+muted = !!save.muted;
+function persist(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }catch(e){} }
+
+/* ---------------- quests (top-of-page icons) ---------------- */
+/* Sets 1–5 use one-time collectibles; sets 6+ cycle repeatable ACTION quests
+   (bounce, climb, ride movers, stamp bookmarks, no-fall runs) forever. */
+const QUEST_SETS = [
+  [{t:'coin',n:7},{t:'key',n:2},{t:'magnet',n:2}],
+  [{t:'coin',n:12},{t:'colorbox',n:2},{t:'key',n:3}],
+  [{t:'coin',n:18},{t:'magnet',n:4},{t:'star',n:3}],
+  [{t:'coin',n:25},{t:'colorbox',n:4},{t:'key',n:5}],
+  [{t:'coin',n:35},{t:'star',n:6},{t:'magnet',n:6}]
+];
+const ACTION_SETS = [
+  [{t:'bubbles',n:40},{t:'climb',n:800},{t:'movers',n:10}],
+  [{t:'bookmarks',n:5},{t:'bubbles',n:60},{t:'noFall',n:1}],
+  [{t:'climb',n:1500},{t:'movers',n:20},{t:'bubbles',n:80}]
+];
+function activeQuests(){
+  if(save.questSet < QUEST_SETS.length) return QUEST_SETS[save.questSet];
+  return ACTION_SETS[(save.questSet - QUEST_SETS.length) % ACTION_SETS.length];
+}
+let questFlash = [0,0,0];      // sparkle timer when a quest ticks
+let setBanner = 0;             // "quests complete!" banner timer
+let setBannerText = '';
+
+function questCollect(type, amt){
+  amt = amt || 1;
+  const qs = activeQuests();
+  let changed = false;
+  for(let i=0;i<qs.length;i++){
+    if(qs[i].t===type && save.questProgress[i] < qs[i].n){
+      save.questProgress[i] = Math.min(qs[i].n, save.questProgress[i] + amt);
+      questFlash[i] = 0.8;
+      changed = true;
+      if(save.questProgress[i] === qs[i].n) SFX.quest();
+      break;
+    }
+  }
+  if(qs.every((q,i)=>save.questProgress[i]>=q.n)) completeQuestSet();
+  else if(changed) persist();
+}
+
+function completeQuestSet(){
+  const idx = save.questSet;
+  save.questSet++;
+  save.questProgress = [0,0,0];
+  setBanner = 3.5;
+  SFX.win();
+  if(idx === 0){                       // board 1 → ZOYA!
+    setBannerText = 'Quest board done!';
+    unlockChar('zoya');
+  } else if(idx === 1){                // board 2 → free piece + coins
+    save.coins += 20;
+    grantPiece();
+    setBannerText = 'Board done! +20 coins & a piece!';
+  } else if(idx === 2){                // board 3 → a rainbow drop
+    save.rainbowDrops++;
+    setBannerText = 'Board done! A RAINBOW DROP!';
+  } else if(idx === 3){                // board 4 → half of Luna's secret
+    save.set4Done = true;
+    setBannerText = 'Board 4 done! Luna is close...';
+    checkLunaUnlock();
+  } else if(idx === 4){                // board 5 → coins + a paper style
+    save.coins += 40;
+    const paper = grantPaper();
+    setBannerText = paper ? 'Board done! +40 coins & ' + paper + '!' : 'Board done! +40 coins!';
+  } else {                             // action boards: steady drip
+    save.coins += 25;
+    setBannerText = 'Quest board done! +25 coins!';
+  }
+  persist();
+}
+
+/* ---------------- characters & perks ----------------------- */
+const CHARACTERS = {
+  muntaha:{name:'Muntaha', hair:'curl',     shirt:'stripes', hairColor:'#4a3320', tint:'#e2699e', steer:1.12,
+           desc:'zips side to side super fast!'},
+  anya:   {name:'Anya',    hair:'pigtails', shirt:'dots',    hairColor:'#2e2318', tint:'#8a6bc1', bounce:1.05,
+           desc:'extra bouncy!'},
+  zoya:   {name:'Zoya',    hair:'pony',     shirt:'zigzag',  hairColor:'#1f1a14', tint:'#4a86c9', bubbleBonus:1, price:350,
+           desc:'bubbles last 11 seconds for her!', hint:'finish your first quest board'},
+  aisha:  {name:'Aisha',   hair:'buns',     shirt:'heart',   hairColor:'#3b2a1a', tint:'#d66969', crumbleBonus:1, price:450, needPieces:3,
+           desc:'crumbly platforms hold longer!', hint:'3 pieces hide in chests (Lv 4+)'},
+  lily:   {name:'Lily',    hair:'bob',      shirt:'flower',  hairColor:'#5a4632', tint:'#4f9e58', starPull:true, price:550, needPieces:3,
+           desc:'stars fly right to her!', hint:'3 pieces on risky routes (Lv 8–10)'},
+  luna:   {name:'Luna',    hair:'wavy',     shirt:'star',    hairColor:'#26233a', tint:'#c9931f', windResist:0.25, floaty:0.93, price:650,
+           desc:'wind can barely push her!', hint:'finish quest board 4 + beat Level 13'},
+  doodle: {name:'Doodle',  hair:'scribble', shirt:'plain',   hairColor:'#7a7a7a', tint:'#e2699e', chestDouble:true, secret:true,
+           desc:'chests pay DOUBLE coins!'},
+  inky:   {name:'Inky',    hair:'ink',      shirt:'splat',   hairColor:'#2b4a8a', tint:'#4a86c9', bounce:1.12, secret:true,
+           desc:'the best bouncer ever!'}
+};
+const KNOWN_ORDER = ['muntaha','anya','zoya','aisha','lily','luna'];
+
+let celebration = null;        // {char} while the NEW FRIEND screen shows
+let stateReturn = 'title';     // where to go after celebration / chest reveal
+
+function unlockChar(id){
+  if(save.unlocked[id]) return;
+  save.unlocked[id] = true;
+  if(id === 'luna') save.secretsRevealed = true;   // "?" cards appear after Luna
+  persist();
+  celebration = {char:id};
+  stateReturn = ['play','win','select','shop','map'].includes(state) ? state : 'title';
+  state = 'friend';
+  SFX.win();
+}
+function grantPiece(forChar){
+  const ch = forChar || (save.pieces.aisha < 3 && !save.unlocked.aisha ? 'aisha'
+                       : save.pieces.lily < 3 && !save.unlocked.lily ? 'lily' : null);
+  if(!ch){ save.coins += 12; return null; }
+  save.pieces[ch]++;
+  persist();
+  if(save.pieces[ch] >= 3) unlockChar(ch);
+  return ch;
+}
+function grantPaper(){
+  const missing = Object.keys(PAPERS).filter(k=>!save.papers.includes(k));
+  if(!missing.length) return null;
+  const k = missing[Math.floor(Math.random()*missing.length)];
+  save.papers.push(k);
+  persist();
+  return PAPERS[k].name;
+}
+function checkLunaUnlock(){
+  if(save.set4Done && save.levelReached >= 14) unlockChar('luna');
+}
+
+/* ============================================================
+   LEVELS — world y goes NEGATIVE upward; x = center.
+   Level 1 is hand-authored (Anya approved it); 2–20 come from
+   LEVEL_DEFS + a seeded generator with reachability limits.
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+/* Per-level knobs. types are weights: plat/bubble/red/yellow/green/purple/crumble/smudge.
+   Every level also gets: keys (2, or 'keys' field), magnets (2, 3 from L13), boxes (1, 2 from L9). */
+const LEVEL_DEFS = {
+  2:{h:4000, gap:[110,150], types:{plat:.75,bubble:.25}, mover:{chance:.25,speed:[.5,.8]}, bookmarks:2, coins:16},
+  3:{h:4200, gap:[110,155], types:{plat:.6,bubble:.3,yellow:.1}, mover:{chance:.3,speed:[.5,.9]}, bookmarks:2, coins:18},
+  4:{h:4400, gap:[110,155], types:{plat:.6,bubble:.3,yellow:.1}, mover:{chance:.3,speed:[.5,.9]}, bookmarks:2, coins:20,
+     chests:[{kind:'piece',char:'aisha',f:.45},{kind:'surprise',f:.8}]},
+  5:{h:4500, gap:[115,160], types:{plat:.5,bubble:.25,crumble:.2,yellow:.05}, mover:{chance:.3,speed:[.55,.95]}, bookmarks:3, coins:21,
+     chests:[{kind:'piece',char:'aisha',f:.55},{kind:'surprise',f:.85}]},
+  6:{h:4600, gap:[115,160], types:{plat:.45,bubble:.2,red:.15,purple:.1,crumble:.1}, mover:{chance:.3,speed:[.6,1]}, bookmarks:3, coins:22,
+     chests:[{kind:'piece',char:'aisha',f:.5},{kind:'surprise',f:.82}]},
+  7:{h:4700, gap:[115,165], types:{plat:.45,bubble:.2,green:.15,purple:.1,crumble:.1}, mover:{chance:.3,speed:[.6,1]}, bookmarks:3, coins:23,
+     chests:[{kind:'surprise',f:.6}]},
+  8:{h:4800, gap:[115,165], types:{plat:.5,bubble:.3,crumble:.2}, mover:{chance:.3,speed:[.6,1.05]}, bookmarks:3, coins:24,
+     routes:{f1:.3,f2:.62}, stars:3, keys:3, pieces:[{char:'lily',f:.45}], chests:[{kind:'surprise',f:.8}]},
+  9:{h:4900, gap:[115,165], types:{plat:.5,bubble:.3,crumble:.2}, mover:{chance:.32,speed:[.6,1.1]}, bookmarks:3, coins:25,
+     routes:{f1:.28,f2:.6}, stars:3, keys:3, tape:4, pieces:[{char:'lily',f:.5}], chests:[{kind:'surprise',f:.85}]},
+  10:{h:5000, gap:[118,168], types:{plat:.5,bubble:.28,crumble:.16,red:.06}, mover:{chance:.32,speed:[.65,1.1]}, bookmarks:3, coins:26,
+     routes:{f1:.3,f2:.64}, stars:3, keys:3, birds:3, pieces:[{char:'lily',f:.55}], chests:[{kind:'piece',char:'lily',f:.85}]},
+  11:{h:5100, gap:[118,168], types:{plat:.5,bubble:.3,crumble:.14,purple:.06}, mover:{chance:.34,speed:[.65,1.15]}, bookmarks:3, coins:27,
+     stars:2, wind:[{f1:.3,f2:.45,dir:1},{f1:.6,f2:.75,dir:-1}], chests:[{kind:'surprise',f:.7}]},
+  12:{h:5200, gap:[118,170], types:{plat:.5,bubble:.28,crumble:.14,red:.08}, mover:{chance:.38,speed:[.7,1.2],pattern:true}, bookmarks:3, coins:28,
+     stars:4, wind:[{f1:.5,f2:.62,dir:1}], chests:[{kind:'surprise',f:.75}]},
+  13:{h:5300, gap:[118,170], types:{plat:.52,bubble:.28,crumble:.14,red:.06}, mover:{chance:.36,speed:[.7,1.2],pattern:true}, bookmarks:3, coins:28,
+     stars:3, eraser:{speed:40}, chests:[{kind:'surprise',f:.65}]},
+  14:{h:5400, gap:[118,170], types:{plat:.42,bubble:.26,crumble:.12,smudge:.14,purple:.06}, mover:{chance:.34,speed:[.7,1.25]}, bookmarks:3, coins:29,
+     stars:3, drops:[.55], chests:[{kind:'surprise',f:.8}]},
+  15:{h:5500, gap:[120,172], types:{plat:.45,bubble:.27,crumble:.12,smudge:.1,green:.06}, mover:{chance:.34,speed:[.75,1.3]}, bookmarks:3, coins:30,
+     stars:3, spinners:3, chests:[{kind:'surprise',f:.7}]},
+  16:{h:5600, gap:[120,172], types:{plat:.45,bubble:.28,crumble:.15,red:.06,purple:.06}, mover:{chance:.36,speed:[.75,1.3],pattern:true}, bookmarks:3, coins:30,
+     routes:{f1:.25,f2:.55}, stars:4, keys:3, secret:true, chests:[{kind:'surprise',f:.35}]},
+  17:{h:5700, gap:[120,175], types:{plat:.3,bubble:.5,purple:.1,crumble:.1}, mover:{chance:.34,speed:[.8,1.35]}, bookmarks:4, coins:32,
+     stars:4, timer:8, chests:[{kind:'surprise',f:.6}]},
+  18:{h:5850, gap:[120,175], types:{plat:.42,bubble:.28,crumble:.12,smudge:.1,red:.08}, mover:{chance:.45,speed:[.9,1.5],pattern:true}, bookmarks:4, coins:33,
+     stars:4, timer:8, birds:3, spinners:2, drops:[.5], chests:[{kind:'surprise',f:.75}]},
+  19:{h:6000, gap:[122,178], types:{plat:.4,bubble:.25,crumble:.15,red:.06,purple:.06,green:.04,smudge:.04}, mover:{chance:.42,speed:[.85,1.45],pattern:true}, bookmarks:4, coins:34,
+     stars:5, keys:3, timer:8, birds:4, spinners:3, wind:[{f1:.4,f2:.55,dir:-1}], chests:[{kind:'rainbow',f:.7}]},
+  20:{h:8000, gap:[118,172], types:{plat:.5,bubble:.3,crumble:.2}, mover:{chance:.36,speed:[.7,1.3],pattern:true}, bookmarks:6, coins:40,
+     stars:6, timer:9, skyTower:true, eraser:{speed:46, fromF:.68}, birds:3, spinners:2,
+     sections:[ {until:.16, types:{plat:.8,bubble:.2}},
+                {until:.32, types:{bubble:.8,purple:.2}},
+                {until:.48, types:{plat:.4,crumble:.45,yellow:.15}},
+                {until:.62, types:{plat:.45,bubble:.25,smudge:.3}},
+                {until:.8,  types:{plat:.4,bubble:.3,red:.15,green:.15}},
+                {until:1.01,types:{plat:.5,bubble:.5}} ]}
+};
+
+function defaultCounts(n, def){
+  return {
+    keys: def.keys || 2,
+    magnets: n >= 13 ? 3 : 2,
+    boxes: n >= 9 ? 2 : 1
+  };
+}
+
+/* ---- Level 1: Anya's original page, hand-authored ---- */
+function buildLevel1Raw(){
+  const P = [], items = [];
+  function plat(x,y,w,move){ P.push({type:'plat', x,y,w, h:26, move:move||null, seed:P.length*13+3}); }
+  function bmk(x,y){ P.push({type:'bookmark', x,y, w:190, h:26, stamped:false, seed:P.length*13+3}); }
+  function bub(x,y,kind,opts){ P.push(Object.assign({type:'bubble', x,y, r:30, kind:kind||'norm', timer:-1, popped:false, dy:0, seed:P.length*17+5}, opts||{})); }
+  function it(t,x,y,extra){ items.push(Object.assign({t,x,y, taken:false, seed:items.length*7+2, phase:(items.length*1.37)%6}, extra||{})); }
+
+  plat(240,   0, 220);
+  plat(120, -140, 115);   it('coin', 120,-185);
+  bub(330, -270);         it('coin', 300,-320); it('coin', 356,-330);
+  plat(430, -400, 100);
+  bub(200, -530);         it('coin',150,-585); it('coin',205,-600); it('coin',258,-585);
+  plat(240, -660, 115, {range:110, speed:0.65});
+  it('key', 240,-715);
+  plat(90,  -800, 100);   it('coin', 90,-848);
+  bub(360, -930);
+  plat(250,-1060, 120);   it('magnet', 250,-1112);
+  bub(110,-1190);         it('coin', 70,-1240); it('coin',140,-1250);
+  plat(420,-1320, 100);
+  plat(200,-1450, 110, {range:140, speed:0.9});
+  it('coin', 200,-1505);
+  bub(320,-1580);         it('key', 320,-1640);
+  bmk(160,-1710);                                  // the bookmark Anya's fans asked for
+  bub(430,-1840);         it('coin', 425,-1895);
+  plat(240,-1970, 130);   it('colorbox', 240,-2025);
+  bub(90, -2100);
+  plat(330,-2230, 100, {range:120, speed:1.1});
+  plat(180,-2360, 110);   it('magnet', 180,-2412);
+  bub(400,-2490);         it('coin',360,-2545); it('coin',410,-2560); it('coin',455,-2545);
+  plat(100,-2620, 110);
+  bub(260,-2750);
+  plat(380,-2880, 100, {range:100, speed:0.8});
+  it('coin', 380,-2932);
+  bub(150,-3010, 'red', {range:120, speed:1.0});
+  plat(300,-3140, 120);   it('coin', 300,-3192);
+  bub(420,-3270);         it('coin', 420,-3325);
+  plat(200,-3400, 135);   it('coin', 165,-3450); it('coin',235,-3450);
+  P.push({type:'finish', x:240, y:-3560, w:270, h:30, seed:999});
+  return {plats:P, items, top:-3560, def:{h:3560, timer:10}, wind:[], birds:[], spinners:[], eraser:null};
+}
+
+/* ---- generator for levels 2–20 ---- */
+function buildLevelRaw(n){
+  if(n === 1) return buildLevel1Raw();
+  const def = LEVEL_DEFS[n];
+  const rng = mulberry32(n*7919 + 13);
+  const R = (a,b)=> a + rng()*(b-a);
+  const P = [], items = [];
+  const H2 = def.h;
+
+  function pick(weights){
+    let total = 0; for(const k in weights) total += weights[k];
+    let v = rng()*total;
+    for(const k in weights){ v -= weights[k]; if(v<=0) return k; }
+    return 'plat';
+  }
+  function typesAt(y){
+    if(!def.sections) return def.types;
+    const f = -y / H2;
+    for(const s of def.sections) if(f < s.until) return s.types;
+    return def.types;
+  }
+
+  // --- main chain, bottom to top ---
+  let y = 0, x = 240, prevKind = 'plat';
+  const chain = [];
+  P.push({type:'plat', x:240, y:0, w:220, h:26, move:null, seed:3});
+  while(y > -H2 + 260){
+    let gap = R(def.gap[0], def.gap[1]);
+    if(prevKind === 'yellow') gap = R(240, 320);        // trampoline launch
+    if(prevKind === 'green')  gap = R(280, 400);        // balloon elevator
+    y -= gap;
+    x = Math.max(70, Math.min(410, x + R(-160, 160)));
+    const kind = pick(typesAt(y));
+    const seed = P.length*13 + n*7 + 3;
+    let node;
+    if(kind === 'plat' || kind === 'crumble' || kind === 'smudge'){
+      const w = R(95, 130);
+      const mover = kind === 'plat' && rng() < def.mover.chance;
+      node = {type:'plat', x, y, w, h:26, seed,
+              move: mover ? {range:R(80,150), speed:R(def.mover.speed[0], def.mover.speed[1])} : null};
+      if(mover && def.mover.pattern && rng() < 0.4)
+        node.pattern = {ry: R(30,55), kind: rng()<0.5 ? 'circle' : 'fig8'};
+      if(kind === 'crumble') node.crumble = {hits:0, limit:2, fallT:0};
+      if(kind === 'smudge'){ node.smudge = {period: R(2.2,3.2), phase: rng()*6}; node.move = null; node.pattern = null; }
+    } else {
+      node = {type:'bubble', x, y, r:30, kind: kind==='bubble' ? 'norm' : kind,
+              timer:-1, popped:false, dy:0, seed};
+      if(kind === 'red'){ node.range = R(90,140); node.speed = R(.7,1.1); }
+    }
+    node.chainIdx = chain.length;
+    chain.push(node); P.push(node);
+    prevKind = kind === 'plat' || kind === 'crumble' || kind === 'smudge' ? 'plat' : kind;
+  }
+
+  // --- reachability fill: no vertical gap taller than a bounce can cross ---
+  function fillBetween(a, bY, bX){
+    let allowed = a.kind === 'yellow' ? 520 : a.kind === 'green' ? 680 : 185;
+    let fromY = a.y, fromX = a.x;
+    while(fromY - bY > allowed){
+      const ny = fromY - Math.min(allowed - 25, 160);
+      const nx = Math.max(70, Math.min(410, (fromX + bX)/2 + R(-60,60)));
+      P.push({type:'bubble', x:nx, y:ny, r:30, kind:'norm', timer:-1, popped:false, dy:0,
+              seed:P.length*13+n*7+3, fill:true});
+      fromY = ny; fromX = nx; allowed = 250;      // bubbles bounce higher
+    }
+  }
+  for(let i=0;i<chain.length-1;i++) fillBetween(chain[i], chain[i+1].y, chain[i+1].x);
+  fillBetween(chain[chain.length-1], -H2, 240);   // ...and the last stretch to the flag
+
+  // --- bookmarks at even spacing (replace nearest SAFE chain node:
+  //     never a boost bubble, never below a gap only a boost can cross) ---
+  for(let b=1; b<=def.bookmarks; b++){
+    const targetY = -H2 * b / (def.bookmarks+1);
+    let best = null, bd = 1e9;
+    for(const node of chain){
+      if(node.type === 'bookmark') continue;
+      if(node.kind === 'yellow' || node.kind === 'green') continue;
+      const nxt = chain[node.chainIdx+1];
+      if(nxt && node.y - nxt.y > 180) continue;
+      const d = Math.abs(node.y - targetY); if(d < bd){ bd = d; best = node; }
+    }
+    if(best){
+      best.type = 'bookmark'; best.w = 190; best.h = 26; best.stamped = false;
+      best.x = Math.max(120, Math.min(360, best.x));
+      best.move = null; best.pattern = null; best.crumble = null; best.smudge = null;
+      delete best.r; delete best.kind; delete best.timer;
+    }
+  }
+
+  // --- risky twin route (safe chain stays; twin gets the loot) ---
+  const riskyNodes = [];
+  if(def.routes){
+    for(const node of chain){
+      const f = -node.y / H2;
+      if(f > def.routes.f1 && f < def.routes.f2 && node.type !== 'bookmark'){
+        const side = node.x < 240 ? 1 : -1;
+        const rx = Math.max(60, Math.min(420, node.x + side*R(150,190)));
+        const twin = rng() < 0.55
+          ? {type:'bubble', x:rx, y:node.y - R(-20,20), r:30, kind:'norm', timer:-1, popped:false, dy:0, seed:P.length*13+n*7+3}
+          : {type:'plat', x:rx, y:node.y - R(-20,20), w:R(85,105), h:26, move:null, seed:P.length*13+n*7+3,
+             crumble:{hits:0, limit:2, fallT:0}};
+        twin.risky = true;
+        P.push(twin); riskyNodes.push(twin);
+      }
+    }
+  }
+
+  // --- secret route (L16): a yellow bubble at the page edge → hidden chain → rainbow chest ---
+  if(def.secret){
+    const baseY = -H2 * 0.62;
+    P.push({type:'bubble', x:52, y:baseY, r:26, kind:'yellow', timer:-1, popped:false, dy:0, seed:801, secret:true});
+    P.push({type:'bubble', x:70, y:baseY-300, r:26, kind:'norm', timer:-1, popped:false, dy:0, seed:802, secret:true});
+    P.push({type:'plat', x:100, y:baseY-560, w:120, h:26, move:null, seed:803, secret:true});
+    items.push({t:'chest', kind:'rainbow', reward:'doodle', x:100, y:baseY-620, taken:false, seed:804, phase:0});
+  }
+
+  // --- items along the chain ---
+  function nodeAt(f){
+    const targetY = -H2 * f;
+    let best = chain[0], bd = 1e9;
+    for(const node of chain){ const d = Math.abs(node.y - targetY); if(d < bd){ bd = d; best = node; } }
+    return best;
+  }
+  function itemOn(node, t, extra){
+    const nx = node.x + R(-20,20);
+    items.push(Object.assign({t, x:Math.max(40,Math.min(440,nx)), y:node.y - R(48,70),
+      taken:false, seed:items.length*7+n*3+2, phase:(items.length*1.37)%6}, extra||{}));
+  }
+  // coins: arcs over evenly spaced chain nodes
+  let placed = 0, ci = 1;
+  const per = Math.max(1, Math.floor(chain.length / Math.max(1, Math.ceil(def.coins/2.4))));
+  while(placed < def.coins && ci < chain.length){
+    const node = chain[ci];
+    const burstN = Math.min(def.coins - placed, 1 + Math.floor(rng()*3));
+    for(let k=0;k<burstN;k++)
+      items.push({t:'coin', x:Math.max(35,Math.min(445, node.x - (burstN-1)*24/2 + k*24 + R(-6,6))),
+                  y:node.y - 52 - Math.abs(k-(burstN-1)/2)*10,
+                  taken:false, seed:items.length*7+n*3+2, phase:(items.length*1.37)%6});
+    placed += burstN;
+    ci += per;
+  }
+  const counts = defaultCounts(n, def);
+  const keyFs = [.3,.62,.88], magFs = [.4,.72,.55], boxFs = [.5,.82];
+  for(let i=0;i<counts.keys;i++)   itemOn(nodeAt(keyFs[i%3] + R(-.04,.04)), 'key');
+  for(let i=0;i<counts.magnets;i++)itemOn(nodeAt(magFs[i%3] + R(-.04,.04)), 'magnet');
+  for(let i=0;i<counts.boxes;i++)  itemOn(nodeAt(boxFs[i%2] + R(-.04,.04)), 'colorbox');
+  // stars & pieces live on the risky route when there is one
+  const starHosts = riskyNodes.length ? riskyNodes : chain;
+  for(let i=0;i<(def.stars||0);i++)
+    itemOn(starHosts[Math.floor(rng()*starHosts.length)], 'star');
+  for(const pd of (def.pieces||[])){
+    const host = riskyNodes.length ? riskyNodes[Math.floor(riskyNodes.length*0.5)] : nodeAt(pd.f);
+    itemOn(host, 'piece', {char: pd.char});
+  }
+  for(const f of (def.drops||[])) itemOn(nodeAt(f), 'drop');
+  for(const cd of (def.chests||[])){
+    const host = nodeAt(cd.f);
+    items.push({t:'chest', kind:cd.kind, char:cd.char||null, reward:cd.kind==='rainbow' ? 'jackpot' : null,
+      x:Math.max(60,Math.min(420, host.x + R(-30,30))), y:host.y - 66,
+      taken:false, seed:items.length*7+n*3+2, phase:0});
+  }
+
+  // --- hazards ---
+  const wind = (def.wind||[]).map(wd=>({y1:-H2*wd.f2, y2:-H2*wd.f1, dir:wd.dir}));
+  const birds = [];
+  for(let i=0;i<(def.birds||0);i++)
+    birds.push({y:-H2*(0.25 + 0.6*rng()), speed:R(90,150), dir:rng()<0.5?-1:1, phase:rng()*6, hitT:0});
+  const spinners = [];
+  for(let i=0;i<(def.spinners||0);i++){
+    const host = nodeAt(0.3 + 0.55*rng());
+    spinners.push({x:Math.max(70,Math.min(410,host.x + R(-40,40))), y:host.y - 110, len:52, speed:R(1.6,2.4)*(rng()<0.5?-1:1), phase:rng()*6});
+  }
+  // tape strips on some platforms
+  if(def.tape){
+    const platNodes = chain.filter(c=>c.type==='plat' && !c.crumble && !c.smudge);
+    for(let i=0;i<def.tape && platNodes.length;i++)
+      platNodes[Math.floor(rng()*platNodes.length)].tape = true;
+  }
+  const eraser = def.eraser ? {speed:def.eraser.speed, y:300, active:false, fromF:def.eraser.fromF||0.12} : null;
+
+  P.push({type:'finish', x:240, y:-H2, w:270, h:30, seed:999});
+  return {plats:P, items, top:-H2, def, wind, birds, spinners, eraser};
+}
+
+/* ---- wrap: apply the one-time ledger (ghosts) + saved state ---- */
+function buildLevel(n){
+  const lv = buildLevelRaw(n);
+  lv.n = n;
+  lv.items.forEach((it, i) => { it.id = i; });
+  const taken = save.taken[n] || [];
+  for(const it of lv.items){
+    if(taken.includes(it.id)){ it.taken = true; it.ghost = true; }
+  }
+  // finish chest one-time
+  lv.chestOpenedBefore = !!save.chestsOpened[n];
+  // restore stamped bookmark
+  const bms = lv.plats.filter(p=>p.type==='bookmark');
+  bms.forEach((b, i) => { b.bmIndex = i; });
+  lv.bookmarks = bms;
+  const stamped = save.bookmark[n];
+  if(stamped !== undefined && bms[stamped]) bms[stamped].stamped = true;
+  return lv;
+}
+
+/* ---------------- player (with verlet limbs) --------------- */
+function makeLimb(len1, len2){
+  return {e:{x:0,y:0,px:0,py:0}, h:{x:0,y:0,px:0,py:0}, len1, len2, init:false};
+}
+const player = {
+  x:240, y:-40, vx:0, vy:0, r:15,
+  squash:1, grinT:0, blinkT:2, faceDir:1,
+  magnetT:0, alive:true,
+  limbs:{ armL:makeLimb(13,12), armR:makeLimb(13,12), legL:makeLimb(13,12), legR:makeLimb(13,12) }
+};
+function resetPlayer(){
+  player.x = 240; player.y = -40; player.vx = 0; player.vy = -200;
+  player.squash = 1; player.magnetT = 0; player.alive = true; player.grinT = 0;
+  for(const k in player.limbs) player.limbs[k].init = false;
+}
+function limbUpdate(l, ax, ay, dt){
+  if(!l.init){ l.e.x=ax; l.e.y=ay+l.len1; l.e.px=l.e.x; l.e.py=l.e.y;
+               l.h.x=ax; l.h.y=ay+l.len1+l.len2; l.h.px=l.h.x; l.h.py=l.h.y; l.init=true; }
+  for(const p of [l.e, l.h]){
+    const nx = p.x + (p.x-p.px)*0.86, ny = p.y + (p.y-p.py)*0.86 + 260*dt*dt*60;
+    p.px = p.x; p.py = p.y; p.x = nx; p.y = ny;
+  }
+  for(let i=0;i<3;i++){
+    // anchor→elbow
+    let dx=l.e.x-ax, dy=l.e.y-ay, d=Math.hypot(dx,dy)||1, diff=(d-l.len1)/d;
+    l.e.x -= dx*diff; l.e.y -= dy*diff;
+    // elbow→hand
+    dx=l.h.x-l.e.x; dy=l.h.y-l.e.y; d=Math.hypot(dx,dy)||1; diff=(d-l.len2)/d*0.5;
+    l.h.x -= dx*diff; l.h.y -= dy*diff;
+    l.e.x += dx*diff; l.e.y += dy*diff;
+  }
+}
+
+/* ---------------- physics constants ------------------------ */
+const GRAV = 1900;
+const BOUNCE_V = 900;        // platform bounce
+const BUBBLE_V = 1010;       // bubbles are extra bouncy
+const STEER = 1500;
+const MAXVX = 420;
+
+/* ---------------- game state ------------------------------- */
+let state = PLAYER_TAG ? 'title' : 'who';   // who | title | map | select | shop | play | win | dead | fell | chest | friend
+let level = null;
+let curLevel = 1;
+let camY = 0;                // world y at top of screen
+let roundCoins = 0, roundKeys = 0, roundFalls = 0;
+let particles = [], floaties = [];
+let wash = null;             // color-wash animation
+let chestResult = null;      // finish chest outcome (win screen)
+let chestReveal = null;      // wandering-chest reveal screen data
+let heightClimbed = 0, lastClimbMark = 0;
+let time = 0;
+let roundTime = 0;           // stopwatch for this try (bookmark respawns keep it running)
+let winTimeInfo = null;      // {t, isNew} for the win screen
+let shake = 0;
+let chestDeniedT = 0;        // cooldown for "need a key!" floaties
+
+function fmtTime(s){
+  const m = Math.floor(s/60), sec = s - m*60;
+  return m + ':' + (sec < 10 ? '0' : '') + sec.toFixed(1);
+}
+
+function startRound(n){
+  curLevel = n || curLevel || 1;
+  level = buildLevel(curLevel);
+  const st = save.stats.levels[curLevel] = save.stats.levels[curLevel] || {tries:0, wins:0};
+  st.tries++;
+  sessLevel(curLevel).tries++;
+  resetPlayer();
+  roundCoins = 0; roundKeys = 0; roundFalls = 0;
+  particles = []; floaties = [];
+  wash = null; chestResult = null; chestReveal = null;
+  heightClimbed = 0; lastClimbMark = 0;
+  roundTime = 0; winTimeInfo = null;
+  const bmIdx = save.bookmark[curLevel];
+  if(bmIdx !== undefined && level.bookmarks[bmIdx]){
+    const bm = level.bookmarks[bmIdx];
+    player.x = bm.x; player.y = bm.y - 40; player.vy = -200;
+    camY = bm.y - H + 220;
+    heightClimbed = lastClimbMark = Math.max(0, -Math.round(bm.y/10));
+  } else {
+    camY = -H + 60;
+  }
+  if(level.eraser){ level.eraser.active = false; level.eraser.y = player.y + 800; }
+  state = 'play';
+}
+
+function respawnAtBookmark(){
+  const bmIdx = save.bookmark[curLevel];
+  const bm = bmIdx !== undefined ? (level.bookmarks[bmIdx] || null) : null;
+  if(!bm){ startRound(curLevel); return; }
+  player.x = bm.x; player.y = bm.y - 40; player.vx = 0; player.vy = -200;
+  player.alive = true; player.magnetT = 0;
+  for(const k in player.limbs) player.limbs[k].init = false;
+  camY = bm.y - H + 220;
+  if(level.eraser) level.eraser.y = bm.y + 800;
+  state = 'play';
+}
+
+function handleFall(){
+  roundFalls++;
+  SFX.fall();
+  save.bestHeight = Math.max(save.bestHeight, heightClimbed);
+  persist();
+  state = (save.bookmark[curLevel] !== undefined) ? 'fell' : 'dead';
+}
+
+function recordTaken(it){
+  it.taken = true;
+  if(!save.taken[curLevel]) save.taken[curLevel] = [];
+  save.taken[curLevel].push(it.id);
+}
+
+/* wandering / rainbow chest opening */
+function tryOpenChest(it){
+  if(time - chestDeniedT < 1.2 && chestDeniedT > 0) return;
+  const needsDrop = it.kind === 'rainbow';
+  if(needsDrop ? save.rainbowDrops < 1 : (save.keysHeld < 1 && save.rainbowDrops < 1)){
+    chestDeniedT = time;
+    floatText(needsDrop ? 'Needs a RAINBOW DROP!' : 'Need a key!', it.x, it.y - 40, '#d66969');
+    return;
+  }
+  if(needsDrop) save.rainbowDrops--;
+  else if(save.keysHeld > 0) save.keysHeld--;
+  else save.rainbowDrops--;                        // rainbow drop opens any chest
+  recordTaken(it);
+  const ch = CHARACTERS[save.selected] || CHARACTERS.muntaha;
+  const dbl = ch.chestDouble ? 2 : 1;
+  let lines = [];
+  if(it.kind === 'rainbow' && it.reward === 'doodle' && !save.unlocked.doodle){
+    persist();
+    SFX.chest();
+    unlockChar('doodle');                          // celebration replaces the reveal
+    return;
+  }
+  if(it.kind === 'rainbow'){                       // jackpot chest
+    const got = 60 * dbl;
+    save.coins += got; roundCoins += got;
+    save.rainbowDrops++;
+    const paper = grantPaper();
+    lines = ['JACKPOT!', '+' + got + ' coins!', '+1 rainbow drop!'];
+    if(paper) lines.push(paper + ' unlocked!');
+  } else if(it.kind === 'piece'){
+    const who = grantPiece(it.char);
+    lines = who ? ['A puzzle piece!', CHARACTERS[who].name + ': ' + save.pieces[who] + '/3']
+                : ['A piece... already done!', '+12 coins instead!'];
+  } else {                                         // surprise chest
+    const roll = Math.random();
+    if(roll < 0.5){ const got = (10 + Math.floor(Math.random()*9)) * dbl; save.coins += got; roundCoins += got; lines = ['Coins!', '+' + got + ' coins!']; }
+    else if(roll < 0.8){ save.coins += 5; roundCoins += 5; questCollect('star'); lines = ['A star!', '+5 coins!']; }
+    else if(roll < 0.9){ save.rainbowDrops++; lines = ['Wow... a RAINBOW DROP!']; }
+    else { const paper = grantPaper(); lines = paper ? ['A new place!', paper + ' unlocked!'] : ['+15 coins!']; if(!paper){ save.coins += 15; roundCoins += 15; } }
+  }
+  persist();
+  SFX.chest();
+  chestReveal = {lines, t:0};
+  stateReturn = 'play';
+  state = 'chest';
+}
+
+/* ---------------- input ------------------------------------ */
+const keys = {};
+let touchDir = 0, isTouch = false;
+window.addEventListener('keydown', e=>{
+  keys[e.key] = true;
+  if(e.key===' ' || e.key==='ArrowUp') e.preventDefault();
+});
+window.addEventListener('keyup', e=>{ keys[e.key] = false; });
+
+let uiButtons = [];
+function toCanvas(e){
+  const r = cv.getBoundingClientRect();
+  return { x:(e.clientX - r.left) / r.width * W, y:(e.clientY - r.top) / r.height * H };
+}
+window.addEventListener('pointerdown', e=>{
+  audio();
+  if(e.pointerType==='touch') isTouch = true;
+  const p = toCanvas(e);
+  for(const b of uiButtons){
+    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){ SFX.click(); b.cb(); return; }
+  }
+  if(state==='play'){ touchDir = p.x < W/2 ? -1 : 1; }
+});
+window.addEventListener('pointerup',   ()=>{ touchDir = 0; });
+window.addEventListener('pointercancel',()=>{ touchDir = 0; });
+
+/* ---------------- update ----------------------------------- */
+function platXAt(p, t){
+  if(!p.move) return p.x;
+  return p.x + Math.sin(t * p.move.speed + p.seed) * p.move.range;
+}
+function platYAt(p, t){
+  if(!p.pattern || !p.move) return p.y;
+  const th = t * p.move.speed + p.seed;
+  return p.y + Math.cos(th) * p.pattern.ry * (p.pattern.kind === 'fig8' ? Math.sin(th) * 1.3 : 1);
+}
+function platVXAt(p, t){
+  if(!p.move) return 0;
+  return Math.cos(t * p.move.speed + p.seed) * p.move.speed * p.move.range;
+}
+function bubXAt(b, t){
+  if(b.kind !== 'red') return b.x;
+  return b.x + Math.sin(t * b.speed + b.seed) * b.range;
+}
+function bubYAt(b){ return b.y + (b.dy || 0); }
+function smudgeSolid(p, t){
+  return Math.sin(t * Math.PI*2 / p.smudge.period + p.smudge.phase) > -0.2;
+}
+function birdX(b, t){
+  const span = W + 160;
+  return ((b.phase*97 + t*b.speed*b.dir) % span + span) % span - 80;
+}
+function bubbleLife(){
+  const base = (level && level.def && level.def.timer) || 10;
+  const ch = CHARACTERS[save.selected] || CHARACTERS.muntaha;
+  return base + (ch.bubbleBonus || 0);
+}
+
+function update(dt){
+  time += dt;
+  wob = Math.floor(time * 6);
+  if(setBanner>0) setBanner -= dt;
+  for(let i=0;i<3;i++) if(questFlash[i]>0) questFlash[i]-=dt;
+
+  if(state !== 'play'){
+    // gentle idle wobble on menus
+    return;
+  }
+
+  roundTime += dt;                                 // the try stopwatch
+  save.stats.playSec += dt;                        // lifetime play clock
+  const ch = CHARACTERS[save.selected] || CHARACTERS.muntaha;
+
+  // steering
+  let dir = 0;
+  if(keys['ArrowLeft']||keys['a']||keys['A']) dir -= 1;
+  if(keys['ArrowRight']||keys['d']||keys['D']) dir += 1;
+  if(touchDir) dir = touchDir;
+  if(dir) player.faceDir = dir;
+  player.vx += dir * STEER * (ch.steer||1) * dt;
+  if(!dir) player.vx *= Math.pow(0.002, dt);       // friction
+  player.vx = Math.max(-MAXVX, Math.min(MAXVX, player.vx));
+
+  // wind swirls push (Luna barely feels them)
+  for(const wband of level.wind){
+    if(player.y > wband.y1 && player.y < wband.y2){
+      player.vx += wband.dir * 230 * (ch.windResist||1) * dt;
+      if(Math.random() < dt*6)
+        particles.push({x:wband.dir>0?-4:W+4, y:player.y + (Math.random()-0.5)*300,
+                        vx:wband.dir*180, vy:0, life:1.2, color:PAL().bubble, wind:true});
+    }
+  }
+
+  const prevY = player.y;
+  player.vy += GRAV * (ch.floaty||1) * dt;
+  player.x += player.vx * dt;
+  player.y += player.vy * dt;
+
+  // wrap around screen edges (Doodle-Jump style)
+  if(player.x < -14) player.x = W+14;
+  if(player.x > W+14) player.x = -14;
+
+  // squash recovery
+  player.squash += (1 - player.squash) * Math.min(1, dt*10);
+  if(player.grinT>0) player.grinT -= dt;
+  player.blinkT -= dt;
+  if(player.blinkT < -0.12) player.blinkT = 1.5 + Math.random()*2.5;
+
+  const feet = player.y + player.r;
+  const prevFeet = prevY + player.r;
+
+  // ---- collisions (only while falling) ----
+  if(player.vy > 0){
+    for(const p of level.plats){
+      if(p.type === 'bubble'){
+        if(p.popped) continue;
+        const bx = bubXAt(p, time), by = bubYAt(p);
+        const dx = player.x - bx, dy = (player.y + player.r*0.6) - by;
+        if(dx*dx + dy*dy < (p.r + player.r*0.7)*(p.r + player.r*0.7) && player.y < by){
+          let kick = BUBBLE_V;
+          if(p.kind === 'yellow') kick *= 1.42;          // trampoline!
+          if(p.kind === 'purple') kick *= 1.12;          // shy but springy
+          player.vy = -kick * (ch.bounce||1);
+          player.squash = 1.45;
+          player.grinT = 0.5;
+          p.wobbleT = 0.4;
+          if(p.timer < 0) p.timer = p.kind === 'purple' ? 5 : bubbleLife();
+          if(p.kind === 'green' && !p.rising) p.rising = true;   // balloon lifts off
+          questCollect('bubbles');
+          SFX.bubble();
+          burst(bx, by - p.r, PAL().bubble, 5);
+        }
+      } else { // plat, bookmark or finish
+        if(p.crumble && p.crumble.fallT > 0) continue;             // already collapsed
+        if(p.smudge && !smudgeSolid(p, time)) continue;            // faded out right now
+        const px = platXAt(p, time);
+        const top = platYAt(p, time);
+        if(prevFeet <= top + 6 && feet >= top &&
+           Math.abs(player.x - px) < p.w/2 + player.r*0.7){
+          player.y = top - player.r;
+          const bounceF = p.tape ? 0.62 : 1;               // sticky tape: schlorp
+          player.vy = -BOUNCE_V * (ch.bounce||1) * bounceF;
+          player.vx += platVXAt(p, time) * 0.55;           // movers pass on momentum
+          player.squash = p.tape ? 1.7 : 1.4;
+          player.grinT = 0.4;
+          if(p.move) questCollect('movers');
+          if(p.tape) beep(120, 0.25, 'sawtooth', 0.1, -40); else SFX.boing();
+          burst(player.x, top, '#b9b2a0', 4);
+          if(p.crumble){
+            p.crumble.hits++;
+            const limit = p.crumble.limit + (ch.crumbleBonus||0);
+            if(p.crumble.hits >= limit){ p.crumble.fallT = 0.01; SFX.pop(); }
+            else beep(200, 0.12, 'square', 0.08, -80);
+          }
+          if(p.type === 'bookmark' && !p.stamped){
+            p.stamped = true;
+            save.bookmark[curLevel] = p.bmIndex;
+            persist();
+            questCollect('bookmarks');
+            SFX.key();
+            floatText('BOOKMARKED!', px, top - 40, '#4f9e58');
+          }
+          if(p.type === 'finish'){ winRound(); return; }
+        }
+      }
+    }
+  }
+
+  // ---- bubble timers / green rise / crumble fall ----
+  for(const p of level.plats){
+    if(p.crumble && p.crumble.fallT > 0){ p.crumble.fallT += dt; continue; }
+    if(p.type!=='bubble') continue;
+    if(p.popped){
+      // green balloons drift back: they're elevators, not one-shot bubbles
+      if(p.kind === 'green'){
+        p.respawnT = (p.respawnT || 3) - dt;
+        if(p.respawnT <= 0){ p.popped = false; p.rising = false; p.dy = 0; p.timer = -1; p.respawnT = 0; }
+      }
+      continue;
+    }
+    if(p.wobbleT>0) p.wobbleT -= dt;
+    if(p.rising){
+      p.dy -= 45*dt;
+      if(p.dy < -500){
+        p.popped = true; SFX.pop();
+        burst(bubXAt(p,time), bubYAt(p), PAL().bubble, 12);
+      }
+    }
+    if(p.timer > 0){
+      p.timer -= dt;
+      if(p.timer <= 0){
+        p.popped = true;
+        SFX.pop();
+        const bx = bubXAt(p,time);
+        burst(bx, bubYAt(p), PAL().bubble, 12);
+        floatText('POP!', bx, bubYAt(p), '#d66969');
+      }
+    }
+  }
+
+  // ---- ink-blot birds (knockback, never deadly) ----
+  for(const b of level.birds){
+    if(b.hitT > 0){ b.hitT -= dt; continue; }
+    const bx = birdX(b, time);
+    if(Math.abs(player.x - bx) < 26 && Math.abs(player.y - b.y) < 22){
+      b.hitT = 0.8;
+      player.vx = b.dir * 430;
+      player.vy = Math.min(player.vy, -220);
+      beep(900, 0.12, 'square', 0.1, 300);
+      burst(bx, b.y, INK, 6);
+      floatText('SQUAWK!', bx, b.y - 20, INK);
+    }
+  }
+  // ---- sharpener spinners (timed knockback) ----
+  for(const s of level.spinners){
+    if(s.hitT > 0){ s.hitT -= dt; continue; }
+    const a = time*s.speed + s.phase;
+    const tx = s.x + Math.cos(a)*s.len, ty = s.y + Math.sin(a)*s.len;
+    if(Math.hypot(player.x - tx, player.y - ty) < 24 || Math.hypot(player.x - s.x, player.y - s.y) < 18){
+      s.hitT = 0.8;
+      player.vx = (player.x < tx ? -1 : 1) * 430;
+      player.vy = Math.min(player.vy, -200);
+      beep(300, 0.15, 'sawtooth', 0.1, -100);
+    }
+  }
+  // ---- the eraser chase ----
+  if(level.eraser){
+    const er = level.eraser;
+    if(!er.active && -player.y > level.def.h * er.fromF){ er.active = true; er.y = player.y + 700; }
+    if(er.active){
+      er.y -= er.speed * dt;                                  // it climbs after you!
+      er.y = Math.min(er.y, player.y + 900);                  // never hopelessly far behind
+      if(player.y + player.r > er.y - 16){ handleFall(); return; }
+    }
+  }
+
+  // ---- collectibles ----
+  const magnetOn = player.magnetT > 0;
+  if(magnetOn) player.magnetT -= dt;
+  for(const it of level.items){
+    if(it.taken) continue;
+    const pullable = it.t === 'coin' || it.t === 'star';
+    const starPull = it.t === 'star' && ch.starPull;
+    if((magnetOn && pullable) || starPull){
+      const dx = player.x - it.x, dy = player.y - it.y, d = Math.hypot(dx,dy);
+      const range = starPull ? 210 : 170;
+      if(d < range && d > 1){ it.x += dx/d * 420*dt; it.y += dy/d * 420*dt; }
+    }
+    const dx = player.x - it.x, dy = player.y - it.y;
+    if(dx*dx + dy*dy < 30*30){
+      if(it.t === 'chest'){ tryOpenChest(it); if(state !== 'play') return; continue; }
+      recordTaken(it);
+      if(it.t==='coin'){ save.coins++; roundCoins++; SFX.coin(); questCollect('coin'); floatText('+1', it.x, it.y, '#c9931f'); }
+      if(it.t==='star'){ save.coins += 5; roundCoins += 5; SFX.coin(); questCollect('star'); floatText('★ +5!', it.x, it.y, '#c9931f'); }
+      if(it.t==='key'){ save.keysHeld++; roundKeys++; SFX.key(); questCollect('key'); floatText('KEY!', it.x, it.y, INK); }
+      if(it.t==='magnet'){ player.magnetT = 8; SFX.magnet(); questCollect('magnet'); floatText('MAGNET!', it.x, it.y, '#4a86c9'); }
+      if(it.t==='drop'){ save.rainbowDrops++; SFX.colorbox(); floatText('RAINBOW DROP!', it.x, it.y, '#8a6bc1'); }
+      if(it.t==='piece'){
+        const who = it.char;
+        SFX.key();
+        floatText('A PIECE OF ' + CHARACTERS[who].name.toUpperCase() + '!', it.x, it.y, CHARACTERS[who].tint);
+        grantPiece(who);
+        if(state !== 'play'){ persist(); return; }   // unlock celebration took over
+      }
+      if(it.t==='colorbox'){
+        const others = Object.keys(PALETTES).filter(k=>k!==paletteKey);
+        paletteKey = others[Math.floor(Math.random()*others.length)];
+        wash = {t:0, x:it.x, y:it.y};
+        SFX.colorbox(); questCollect('colorbox');
+        floatText(PAL().name + '!', it.x, it.y, PAL().main);
+      }
+      burst(it.x, it.y, PAL().accent, 6);
+      persist();
+    }
+  }
+
+  // ---- limbs (they follow the motion) ----
+  const sway = Math.max(-1, Math.min(1, player.vx/300));
+  limbUpdate(player.limbs.armL, player.x-11 - sway*2, player.y-4, dt);
+  limbUpdate(player.limbs.armR, player.x+11 - sway*2, player.y-4, dt);
+  limbUpdate(player.limbs.legL, player.x-6, player.y+12, dt);
+  limbUpdate(player.limbs.legR, player.x+6, player.y+12, dt);
+
+  // ---- camera ----
+  const target = player.y - H*0.42;
+  if(target < camY) camY += (target - camY) * Math.min(1, dt*8);
+  heightClimbed = Math.max(heightClimbed, -Math.round(player.y/10));
+  if(heightClimbed > lastClimbMark){                 // climb action-quest ticks
+    questCollect('climb', heightClimbed - lastClimbMark);
+    lastClimbMark = heightClimbed;
+  }
+
+  // ---- fell off the page? ----
+  if(player.y > camY + H + 70){ handleFall(); return; }
+
+  // ---- particles / floaties / wash ----
+  particles = particles.filter(p=>{
+    if(!p.wind) p.vy += 700*dt;
+    p.x += p.vx*dt; p.y += p.vy*dt; p.life -= dt;
+    return p.life > 0;
+  });
+  floaties = floaties.filter(f=>{ f.y -= 40*dt; f.life -= dt; return f.life > 0; });
+  if(wash){ wash.t += dt*1.6; if(wash.t>1.6) wash = null; }
+  if(shake>0) shake -= dt;
+}
+
+function winRound(){
+  state = 'win';
+  save.level1Done = save.level1Done || curLevel === 1;
+  save.levelsDone[curLevel] = true;
+  save.levelReached = Math.max(save.levelReached, Math.min(20, curLevel + 1));
+  delete save.bookmark[curLevel];                    // finished: replay starts fresh
+  save.bestHeight = Math.max(save.bestHeight, heightClimbed);
+  const tRounded = Math.round(roundTime*10)/10;
+  const isNewBest = !save.bestTime[curLevel] || tRounded < save.bestTime[curLevel];
+  if(isNewBest) save.bestTime[curLevel] = tRounded;
+  winTimeInfo = {t:tRounded, isNew:isNewBest};
+  const st = save.stats.levels[curLevel] = save.stats.levels[curLevel] || {tries:0, wins:0};
+  st.wins++; st.lastClear = tRounded;
+  const sl = sessLevel(curLevel);
+  sl.wins++;
+  if(!sl.best || tRounded < sl.best) sl.best = tRounded;
+  tSend('🏆 ' + PLAYER_TAG + ' beat Level ' + curLevel + '!',
+        'Time ' + fmtTime(tRounded) + (isNewBest ? ' — NEW BEST!' : '') +
+        ' • try #' + st.tries + ' • ' + save.coins + ' coins total');
+  if(roundFalls === 0) questCollect('noFall');
+  const ch = CHARACTERS[save.selected] || CHARACTERS.muntaha;
+  // finish chest: one key, one time, coins under 20 (Anya's rule)
+  if(level.chestOpenedBefore){
+    chestResult = {ghost:true};
+  } else if(save.keysHeld > 0){
+    save.keysHeld--;
+    const got = (8 + Math.floor(Math.random()*12)) * (ch.chestDouble ? 2 : 1);
+    save.coins += got;
+    roundCoins += got;
+    save.chestsOpened[curLevel] = true;
+    chestResult = {opened:true, coins:got};
+    SFX.chest();
+  } else {
+    chestResult = {opened:false};
+  }
+  persist();
+  SFX.win();
+  checkLunaUnlock();
+  if(curLevel === 20) unlockChar('inky');            // the top of the sky tower
+}
+
+function burst(x,y,color,n){
+  for(let i=0;i<n;i++){
+    const a = Math.random()*Math.PI*2, s = 60+Math.random()*160;
+    particles.push({x,y, vx:Math.cos(a)*s, vy:Math.sin(a)*s-80, life:0.5+Math.random()*0.4, color});
+  }
+}
+function floatText(txt,x,y,color){ floaties.push({txt,x,y,color,life:1.1}); }
+
+/* ============================================================
+   DRAWING
+   ============================================================ */
+function sy(worldY){ return worldY - camY; }   // world→screen y
+
+/* ---- collectible icons (hand-drawn) ---- */
+function drawCoin(x,y,r,seed){
+  pencil(0.9, 2);
+  hatchCircle(x,y,r-2,'#e2b33c',0.5);
+  sketchCircle(x,y,r,seed);
+  sketchCircle(x,y,r*0.5,seed+3);
+}
+function drawKey(x,y,s,seed){
+  pencil(0.9, 2);
+  hatchCircle(x-s*0.5,y,s*0.42,'#c9931f',0.4);
+  sketchCircle(x-s*0.5, y, s*0.45, seed);
+  sketchLine(x-s*0.1, y, x+s*0.75, y, seed+1);
+  sketchLine(x+s*0.45, y, x+s*0.45, y+s*0.35, seed+2);
+  sketchLine(x+s*0.72, y, x+s*0.72, y+s*0.42, seed+3);
+}
+function drawMagnet(x,y,s,seed){
+  pencil(0.95, 2.4, '#c14b4b');
+  ctx.beginPath();
+  ctx.arc(x, y - s*0.15, s*0.55, Math.PI, 0);
+  ctx.stroke();
+  sketchLine(x-s*0.55, y-s*0.15, x-s*0.55, y+s*0.5, seed, 1);
+  sketchLine(x+s*0.55, y-s*0.15, x+s*0.55, y+s*0.5, seed+1, 1);
+  pencil(0.9,2,INK);
+  sketchLine(x-s*0.75, y+s*0.3, x-s*0.35, y+s*0.3, seed+2, 0.8);
+  sketchLine(x+s*0.35, y+s*0.3, x+s*0.75, y+s*0.3, seed+3, 0.8);
+}
+function drawColorBox(x,y,s,seed){
+  const cols = ['#e2699e','#4a86c9','#7fb85a','#e2b33c'];
+  for(let i=0;i<4;i++){
+    const qx = x + (i%2? 0 : -s/2), qy = y + (i<2? -s/2 : 0);
+    hatchRect(qx, qy, s/2, s/2, cols[i], 0.55);
+  }
+  pencil(0.9, 2);
+  sketchRect(x-s/2, y-s/2, s, s, seed);
+  sketchLine(x, y-s/2, x, y+s/2, seed+4, 0.8);
+  sketchLine(x-s/2, y, x+s/2, y, seed+5, 0.8);
+}
+function drawChest(x,y,s,seed,open){
+  pencil(0.95, 2.2);
+  hatchRect(x-s/2, y-s*0.35, s, s*0.55, '#b07c3e', 0.45);
+  sketchRect(x-s/2, y-s*0.35, s, s*0.55, seed);
+  if(open){
+    sketchLine(x-s/2, y-s*0.35, x-s*0.6, y-s*0.85, seed+4);
+    sketchLine(x-s*0.6, y-s*0.85, x+s*0.5, y-s*0.75, seed+5);
+    sketchLine(x+s*0.5, y-s*0.75, x+s/2, y-s*0.35, seed+6);
+  } else {
+    hatchRect(x-s/2, y-s*0.55, s, s*0.2, '#b07c3e', 0.55);
+    sketchRect(x-s/2, y-s*0.55, s, s*0.2, seed+4);
+  }
+  sketchCircle(x, y-s*0.18, s*0.09, seed+8);
+}
+
+/* ---- platforms ---- */
+function drawPlat(p){
+  const x = platXAt(p, time) - p.w/2;
+  let y = sy(platYAt(p, time));
+  if(p.crumble && p.crumble.fallT > 0){
+    if(p.crumble.fallT > 1.2) return;                     // gone
+    y += p.crumble.fallT * p.crumble.fallT * 700;         // tumbles off the page
+  }
+  if(y < -60 || y > H+60) return;
+  let alpha = 1;
+  if(p.smudge){
+    const s = Math.sin(time * Math.PI*2 / p.smudge.period + p.smudge.phase);
+    alpha = smudgeSolid(p, time) ? 0.55 + 0.45*Math.min(1, s+0.2) : 0.18;
+  }
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  hatchRect(x, y, p.w, p.h, PAL().main, 0.5*alpha);
+  pencil(0.95*alpha, 2.2);
+  sketchRect(x, y, p.w, p.h, p.seed);
+  // wavy zigzag across (like the cake-slice drawing)
+  ctx.beginPath();
+  pencil(0.8*alpha, 1.8);
+  const n = Math.ceil(p.w/12);
+  for(let i=0;i<=n;i++){
+    const px = x + (p.w*i/n);
+    const py = y + p.h*0.45 + Math.sin(i*1.9 + p.seed)*4 + jit(p.seed+20,i,0.8);
+    i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+  // speed marks on movers (more marks = faster, like her hatch doodles)
+  if(p.move){
+    const marks = Math.round(p.move.speed*3.5);
+    pencil(0.7*alpha, 1.6);
+    for(let i=0;i<marks;i++){
+      const mx = x + p.w/2 - marks*4 + i*8;
+      sketchLine(mx, y-8, mx+3, y-16, p.seed+30+i, 0.7);
+    }
+  }
+  // crumble cracks
+  if(p.crumble && p.crumble.hits > 0){
+    pencil(0.8, 1.6);
+    sketchLine(x+p.w*0.3, y+2, x+p.w*0.45, y+p.h-3, p.seed+40, 2.4);
+    sketchLine(x+p.w*0.45, y+p.h*0.5, x+p.w*0.62, y+3, p.seed+41, 2.4);
+  }
+  // sticky tape strip
+  if(p.tape){
+    ctx.globalAlpha = 0.45*alpha; ctx.fillStyle = '#e8d48a';
+    ctx.fillRect(x+p.w*0.15, y-5, p.w*0.7, 9);
+    ctx.globalAlpha = alpha;
+    pencil(0.5, 1.4);
+    sketchRect(x+p.w*0.15, y-5, p.w*0.7, 9, p.seed+50);
+  }
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+function drawBookmark(p){
+  const x = p.x - p.w/2, y = sy(p.y);
+  if(y < -80 || y > H+80) return;
+  hatchRect(x, y, p.w, p.h, p.stamped ? '#4f9e58' : '#c9931f', 0.35);
+  pencil(0.95, 2.2);
+  sketchRect(x, y, p.w, p.h, p.seed);
+  // ribbon bookmark hanging off the ledge
+  const rx = x + p.w - 26;
+  hatchRect(rx, y - 34, 18, 34, p.stamped ? '#4f9e58' : '#d66969', 0.6);
+  pencil(0.9, 2);
+  sketchLine(rx, y-34, rx, y, p.seed+1, 1);
+  sketchLine(rx+18, y-34, rx+18, y, p.seed+2, 1);
+  sketchLine(rx, y-34, rx+18, y-34, p.seed+3, 1);
+  sketchLine(rx, y, rx+9, y-10, p.seed+4, 1);
+  sketchLine(rx+9, y-10, rx+18, y, p.seed+5, 1);
+  if(p.stamped){
+    pencil(1, 2.6, '#4f9e58');
+    sketchLine(x+16, y-12, x+22, y-4, p.seed+6, 1);
+    sketchLine(x+22, y-4, x+34, y-22, p.seed+7, 1);
+    scribbleText('your bookmark', x+p.w/2, y+40, 13, {color:'#4f9e58', alpha:0.7});
+  }
+  ctx.globalAlpha = 1;
+}
+const BUBBLE_COLS = {
+  norm:   ()=> [PAL().bubble, INK],
+  red:    ()=> ['#d66969', '#b64a4a'],
+  yellow: ()=> ['#e2c33c', '#b0902a'],
+  green:  ()=> ['#7fb85a', '#5a8f3c'],
+  purple: ()=> ['#a97fd4', '#7c56a8']
+};
+function drawBubble(b){
+  if(b.popped) return;
+  const x = bubXAt(b, time);
+  const y = sy(bubYAt(b));
+  if(y < -60 || y > H+60) return;
+  const wobble = (b.wobbleT>0 ? Math.sin(time*40)*3*b.wobbleT : 0);
+  const danger = b.timer>0 && b.timer < 3;
+  const shiver = danger ? Math.sin(time*30)*2.5 : 0;
+  const r = b.r + wobble + shiver*0.5;
+  const bob = Math.sin(time*1.5 + b.seed)*3;
+  const cols = (BUBBLE_COLS[b.kind] || BUBBLE_COLS.norm)();
+  hatchCircle(x, y+bob, r-3, cols[0], b.kind && b.kind!=='norm' ? 0.5 : 0.35);
+  pencil(0.9, 2, cols[1]);
+  sketchCircle(x + shiver, y+bob, r, b.seed);
+  // shine
+  pencil(0.55, 1.6, cols[1]);
+  ctx.beginPath();
+  ctx.arc(x - r*0.35, y+bob - r*0.3, r*0.35, Math.PI*0.9, Math.PI*1.5);
+  ctx.stroke();
+  // tiny doodles that hint what special bubbles do
+  if(b.kind==='yellow'){ pencil(0.75,1.6,cols[1]); sketchLine(x-6,y+bob+5,x,y+bob-7,b.seed+8,0.6); sketchLine(x,y+bob-7,x+6,y+bob+5,b.seed+9,0.6); }
+  if(b.kind==='green'){ pencil(0.75,1.6,cols[1]); sketchLine(x,y+bob+6,x,y+bob-7,b.seed+8,0.6); sketchLine(x-5,y+bob-1,x,y+bob-7,b.seed+9,0.6); sketchLine(x+5,y+bob-1,x,y+bob-7,b.seed+10,0.6); }
+  // countdown arc (pencil timer)
+  if(b.timer > 0){
+    const life = b.kind === 'purple' ? 5 : bubbleLife();
+    pencil(0.85, 3, danger ? '#d66969' : '#4a86c9');
+    ctx.beginPath();
+    ctx.arc(x, y+bob, r+7, -Math.PI/2, -Math.PI/2 + (b.timer/life)*Math.PI*2);
+    ctx.stroke();
+    if(danger) scribbleText(Math.ceil(b.timer), x, y+bob, 20, {color:'#d66969', bold:true});
+  }
+  ctx.globalAlpha = 1;
+}
+function drawFinish(p){
+  const x = p.x - p.w/2, y = sy(p.y);
+  if(y < -120 || y > H+120) return;
+  hatchRect(x, y, p.w, p.h, '#c9931f', 0.4);
+  pencil(0.95, 2.4);
+  sketchRect(x, y, p.w, p.h, p.seed);
+  // flag
+  const fx = p.x + p.w/2 - 30;
+  sketchLine(fx, y, fx, y-58, p.seed+1);
+  hatchRect(fx, y-58, 34, 20, '#d66969', 0.6);
+  sketchRect(fx, y-58, 34, 20, p.seed+2);
+  // chest waiting on the ledge (ghosted after its one opening)
+  if(level && level.chestOpenedBefore){
+    ctx.globalAlpha = 0.35;
+    drawChest(p.x - 40, y - 8, 46, p.seed+10, true);
+    ctx.globalAlpha = 1;
+  } else {
+    drawChest(p.x - 40, y - 8, 46, p.seed+10, false);
+  }
+  scribbleText('FINISH!', p.x, y - 78, 22, {color:'#d66969', bold:true, rot:-0.04});
+}
+/* ---- hazards ---- */
+function drawBirds(){
+  for(const b of level.birds){
+    const y = sy(b.y);
+    if(y < -40 || y > H+40) continue;
+    const x = birdX(b, time);
+    const flap = Math.sin(time*14 + b.phase)*6;
+    pencil(0.9, 2.2);
+    ctx.fillStyle = INK; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.ellipse(x, y, 11, 7, 0, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+    sketchLine(x - 8, y - 4, x - 18, y - 10 - flap, b.phase*10, 1);
+    sketchLine(x + 8, y - 4, x + 18, y - 10 + flap, b.phase*10+1, 1);
+    pencil(0.9, 1.8, '#e2b33c');
+    sketchLine(x + 10*b.dir, y, x + 16*b.dir, y + 2, b.phase*10+2, 0.5);
+  }
+}
+function drawSpinners(){
+  for(const s of level.spinners){
+    const y = sy(s.y);
+    if(y < -80 || y > H+80) continue;
+    const a = time*s.speed + s.phase;
+    pencil(0.9, 2.2);
+    sketchCircle(s.x, y, 10, s.phase*100);
+    for(const off of [0, Math.PI]){
+      const tx = s.x + Math.cos(a+off)*s.len, ty = y + Math.sin(a+off)*s.len;
+      sketchLine(s.x, y, tx, ty, s.phase*100+1+off, 1);
+      pencil(0.85, 2, '#d66969');
+      sketchCircle(tx, ty, 7, s.phase*100+2+off);
+      pencil(0.9, 2.2);
+    }
+  }
+}
+function drawEraser(){
+  const er = level.eraser;
+  if(!er || !er.active) return;
+  const y = sy(er.y);
+  if(y > H + 120) return;
+  ctx.globalAlpha = 0.92;
+  ctx.fillStyle = '#e8a7b8';
+  ctx.fillRect(0, Math.max(-10,y), W, H - Math.max(-10,y) + 40);
+  ctx.globalAlpha = 1;
+  hatchRect(0, y, W, 26, '#c9788f', 0.5);
+  pencil(0.95, 2.6, '#9c5c72');
+  sketchLine(0, y, W, y, 777, 2.4);
+  for(let i=0;i<8;i++){
+    const cx = ((rnd(9,i) * W + time*30*(i%2?1:-1)) % W + W) % W;
+    pencil(0.5, 2, '#c9788f');
+    sketchLine(cx, y - 6 - rnd(10,i)*14, cx+5, y - 4 - rnd(10,i)*14, 778+i, 1);
+  }
+  scribbleText('the eraser is coming!', W/2, y - 18, 15, {color:'#9c5c72', alpha:0.8});
+}
+function drawWindBands(){
+  for(const wband of level.wind){
+    const y1 = sy(wband.y1), y2 = sy(wband.y2);
+    if(y2 < 0 || y1 > H) continue;
+    const top = Math.max(y1, 0), bot = Math.min(y2, H);
+    for(let i=0;i<6;i++){
+      const yy = top + rnd(31,i) * Math.max(30, bot - top);
+      const xx = ((rnd(32,i)*W + time*80*wband.dir) % W + W) % W;
+      pencil(0.3, 1.8);
+      ctx.beginPath();
+      ctx.moveTo(xx - 18*wband.dir, yy);
+      ctx.quadraticCurveTo(xx, yy - 6, xx + 14*wband.dir, yy);
+      ctx.stroke();
+      sketchLine(xx + 14*wband.dir, yy, xx + 8*wband.dir, yy - 5, 33+i, 0.5);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+/* ---- more collectible icons ---- */
+function drawStar(x,y,s,seed){
+  pencil(0.95, 2, '#c9931f');
+  ctx.beginPath();
+  for(let i=0;i<=10;i++){
+    const a = -Math.PI/2 + i*Math.PI/5;
+    const rr = (i%2===0 ? s : s*0.45) + jit(seed,i,1);
+    const px = x + Math.cos(a)*rr, py = y + Math.sin(a)*rr;
+    i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);
+  }
+  ctx.closePath();
+  ctx.globalAlpha = 0.35; ctx.fillStyle = '#e2c33c'; ctx.fill();
+  ctx.globalAlpha = 0.95; ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+function drawPiece(x,y,s,seed,tint){
+  hatchRect(x-s/2, y-s/2, s, s, tint || '#8a6bc1', 0.5);
+  pencil(0.95, 2);
+  sketchRect(x-s/2, y-s/2, s, s, seed);
+  sketchCircle(x, y-s/2, s*0.22, seed+1);        // puzzle nub top
+  sketchCircle(x+s/2, y, s*0.22, seed+2);        // puzzle nub right
+}
+function drawDrop(x,y,s,seed){
+  const cols = ['#d66969','#e2b33c','#4f9e58','#4a86c9','#8a6bc1'];
+  for(let i=0;i<5;i++){
+    pencil(0.85, 2, cols[i]);
+    ctx.beginPath();
+    ctx.arc(x, y + s*0.2, s*(0.9 - i*0.14), Math.PI*1.15, Math.PI*1.85);
+    ctx.stroke();
+  }
+  pencil(0.95, 2, '#4a86c9');
+  ctx.beginPath();
+  ctx.moveTo(x, y - s*0.9);
+  ctx.quadraticCurveTo(x + s*0.75, y + s*0.35, x, y + s*0.6);
+  ctx.quadraticCurveTo(x - s*0.75, y + s*0.35, x, y - s*0.9);
+  ctx.stroke();
+}
+function drawWanderChest(it, y){
+  const shake = it.kind === 'rainbow' ? Math.sin(time*6)*2 : 0;
+  drawChest(it.x + shake, y, 42, it.seed, false);
+  // little padlock + ribbon color hints the chest type (contents stay secret!)
+  const ribbon = it.kind === 'rainbow' ? '#8a6bc1' : it.kind === 'piece' ? (CHARACTERS[it.char] ? CHARACTERS[it.char].tint : '#d66969') : '#4a86c9';
+  hatchRect(it.x - 4, y - 24, 8, 10, ribbon, 0.8);
+  pencil(0.85, 1.8);
+  sketchRect(it.x - 5, y - 2, 10, 9, it.seed+20);
+  ctx.beginPath(); ctx.arc(it.x, y - 2, 4, Math.PI, 0); ctx.stroke();
+  if(it.kind === 'rainbow') drawDrop(it.x + 24, y - 22, 9, it.seed+30);
+}
+
+/* ---- collectibles in world (ghosted once collected forever) ---- */
+function drawItem(it){
+  const y = sy(it.y) + Math.sin(time*2 + it.phase)*4;
+  if(y < -50 || y > H+50) return;
+  if(it.taken && !it.ghost) return;                 // grabbed this round: gone
+  if(it.ghost){
+    // faint grey memory + a little tick: "you already got this one"
+    ctx.save();
+    ctx.globalAlpha = 0.32;
+    const gi = INK;
+    pencil(0.8, 1.8, gi);
+    if(it.t==='chest') sketchRect(it.x-16, y-12, 32, 22, it.seed);
+    else sketchCircle(it.x, y, it.t==='coin' ? 10 : 14, it.seed);
+    pencil(1, 2.2, '#4f9e58');
+    ctx.globalAlpha = 0.55;
+    sketchLine(it.x-5, y+1, it.x-1, y+5, it.seed+3, 0.6);
+    sketchLine(it.x-1, y+5, it.x+6, y-5, it.seed+4, 0.6);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    return;
+  }
+  if(it.t==='coin') drawCoin(it.x, y, 11, it.seed);
+  if(it.t==='key') drawKey(it.x, y, 22, it.seed);
+  if(it.t==='magnet') drawMagnet(it.x, y, 18, it.seed);
+  if(it.t==='colorbox') drawColorBox(it.x, y, 24, it.seed);
+  if(it.t==='star') drawStar(it.x, y, 13, it.seed);
+  if(it.t==='piece') drawPiece(it.x, y, 20, it.seed, CHARACTERS[it.char] && CHARACTERS[it.char].tint);
+  if(it.t==='drop') drawDrop(it.x, y, 12, it.seed);
+  if(it.t==='chest') drawWanderChest(it, y);
+}
+
+/* ---- the girls ---- */
+function drawGirl(x, y, ch, scale, squash, limbs, opts){
+  opts = opts || {};
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale * (2-squash) * (opts.flip||1), scale * squash);
+  const seed = ch.name.length * 31;
+
+  // legs & arms (verlet-driven if provided, posed if not)
+  pencil(0.95, 2.6);
+  if(limbs){
+    ctx.restore(); ctx.save();   // limbs live in world space
+    pencil(0.95, 2.6);
+    for(const key of ['legL','legR']){
+      const l = limbs[key];
+      if(l.init){
+        sketchLine(x + (key==='legL'?-6:6)*scale, y+12*scale, l.e.x, l.e.y, seed+(key==='legL'?1:2), 1);
+        sketchLine(l.e.x, l.e.y, l.h.x, l.h.y, seed+(key==='legL'?3:4), 1);
+        // little shoe scribble
+        pencil(0.85, 2);
+        sketchLine(l.h.x-4, l.h.y+2, l.h.x+5, l.h.y+2, seed+5, 0.8);
+        pencil(0.95, 2.6);
+      }
+    }
+    for(const key of ['armL','armR']){
+      const l = limbs[key];
+      if(l.init){
+        sketchLine(x + (key==='armL'?-11:11)*scale, y-4*scale, l.e.x, l.e.y, seed+(key==='armL'?6:7), 1);
+        sketchLine(l.e.x, l.e.y, l.h.x, l.h.y, seed+(key==='armL'?8:9), 1);
+        sketchCircle(l.h.x, l.h.y, 3, seed+10);
+      }
+    }
+    ctx.restore(); ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale*(2-squash)*(opts.flip||1), scale*squash);
+  } else {
+    sketchLine(-6,12, -8,26, seed+1,1); sketchLine(-8,26,-9,36, seed+2,1);
+    sketchLine(6,12, 8,26, seed+3,1);  sketchLine(8,26,9,36, seed+4,1);
+    sketchLine(-11,-4, -17,6, seed+5,1); sketchLine(-17,6,-19,14, seed+6,1);
+    sketchLine(11,-4, 17,6, seed+7,1);  sketchLine(17,6,19,14, seed+8,1);
+  }
+
+  // body / outfit
+  const dressy = ch.shirt==='dots' || ch.shirt==='flower' || ch.shirt==='star';
+  if(dressy){
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(-15,16); ctx.lineTo(15,16); ctx.closePath(); ctx.clip();
+    ctx.globalAlpha=0.3; ctx.fillStyle=ch.tint; ctx.fillRect(-16,-8,32,26);
+    if(ch.shirt==='dots'){
+      ctx.globalAlpha=0.8; ctx.fillStyle=ch.tint;
+      for(let dy2=-4; dy2<16; dy2+=7) for(let dx2=-12; dx2<14; dx2+=7)
+        ctx.fillRect(dx2 + (dy2%14? 3:0), dy2, 2.5, 2.5);
+    }
+    ctx.restore(); ctx.globalAlpha=1;
+    pencil(0.95, 2.2);
+    sketchLine(0,-8,-15,16, seed+11,1); sketchLine(-15,16,15,16, seed+12,1); sketchLine(15,16,0,-8, seed+13,1);
+    if(ch.shirt==='flower'){
+      pencil(0.9, 1.6, '#fbf0f5');
+      for(let i=0;i<5;i++){ const a=i*Math.PI*2/5; sketchCircle(Math.cos(a)*4, 5+Math.sin(a)*4, 2.4, seed+30+i); }
+      pencil(0.9, 1.8, '#e2b33c'); sketchCircle(0, 5, 2, seed+36);
+    }
+    if(ch.shirt==='star'){
+      pencil(0.95, 1.8, '#f5e6b8');
+      ctx.beginPath();
+      for(let i=0;i<=10;i++){ const a=-Math.PI/2+i*Math.PI/5; const rr=(i%2?2.4:5.5); const px=Math.cos(a)*rr, py=5+Math.sin(a)*rr; i===0?ctx.moveTo(px,py):ctx.lineTo(px,py); }
+      ctx.closePath(); ctx.stroke();
+    }
+  } else {
+    hatchRect(-11,-8, 22, 22, ch.tint, 0.35);
+    pencil(0.95, 2.2);
+    sketchRect(-11,-8, 22, 22, seed+11);
+    if(ch.shirt==='stripes'){
+      pencil(0.75, 1.8);
+      for(let i=-6;i<=6;i+=6) sketchLine(i,-8, i,14, seed+12+i, 0.7);
+    }
+    if(ch.shirt==='zigzag'){
+      pencil(0.85, 1.8);
+      ctx.beginPath();
+      for(let i=0;i<=6;i++){ const px=-10+i*3.4, py=3+(i%2?-4:4); i===0?ctx.moveTo(px,py):ctx.lineTo(px,py); }
+      ctx.stroke();
+    }
+    if(ch.shirt==='heart'){
+      pencil(0.95, 1.8, '#fbf0f5');
+      ctx.beginPath();
+      ctx.moveTo(0,8); ctx.bezierCurveTo(-7,1,-4,-4,0,0); ctx.bezierCurveTo(4,-4,7,1,0,8);
+      ctx.stroke();
+    }
+    if(ch.shirt==='splat'){
+      pencil(0.9, 1.6, '#2b4a8a');
+      sketchCircle(1, 3, 5, seed+31);
+      sketchCircle(-6, -2, 2, seed+32); sketchCircle(7, 8, 1.8, seed+33);
+    }
+  }
+
+  // head
+  pencil(0.95, 2.4);
+  ctx.globalAlpha = 0.9; ctx.fillStyle = PAPER().bg;
+  ctx.beginPath(); ctx.arc(0,-24,15,0,Math.PI*2); ctx.fill(); ctx.globalAlpha=1;
+  sketchCircle(0,-24, 15, seed+14);
+
+  // hair
+  pencil(0.9, 2.2, ch.hairColor);
+  if(ch.hair==='curl'){
+    for(let i=0;i<5;i++){
+      sketchCircle(-16 + rnd(seed,i)*8, -37 + rnd(seed,i+9)*8, 5+rnd(seed,i+4)*2, seed+20+i);
+    }
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.05, Math.PI*1.95); ctx.stroke();
+  } else if(ch.hair==='pigtails'){
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.02, Math.PI*1.98); ctx.stroke();
+    sketchCircle(-17,-24, 6, seed+20); sketchCircle(-19,-17, 5, seed+21);
+    sketchCircle(17,-24, 6, seed+22);  sketchCircle(19,-17, 5, seed+23);
+  } else if(ch.hair==='pony'){
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.02, Math.PI*1.98); ctx.stroke();
+    sketchCircle(15,-31, 5, seed+20); sketchCircle(18,-23, 4.5, seed+21); sketchCircle(20,-15, 4, seed+22);
+  } else if(ch.hair==='buns'){
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.02, Math.PI*1.98); ctx.stroke();
+    sketchCircle(-10,-39, 6, seed+20); sketchCircle(10,-39, 6, seed+21);
+  } else if(ch.hair==='bob'){
+    ctx.beginPath(); ctx.arc(0,-26, 14.5, Math.PI*0.9, Math.PI*2.1); ctx.stroke();
+    sketchLine(-14,-20,-13,-12, seed+20, 1); sketchLine(14,-20,13,-12, seed+21, 1);
+    pencil(0.9, 1.8, '#e2699e'); sketchCircle(11,-35, 3, seed+22);
+  } else if(ch.hair==='wavy'){
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.0, Math.PI*2.0); ctx.stroke();
+    for(const s2 of [-1,1]){
+      ctx.beginPath();
+      for(let i=0;i<=5;i++){ const px=s2*(14+Math.sin(i*2)*2.5), py=-26+i*5; i===0?ctx.moveTo(px,py):ctx.lineTo(px,py); }
+      ctx.stroke();
+    }
+    pencil(0.9, 1.8, '#e2b33c'); sketchCircle(9,-36, 2.6, seed+22);
+  } else if(ch.hair==='scribble'){
+    for(let i=0;i<8;i++)
+      sketchLine(-13+rnd(seed,i)*26, -40+rnd(seed,i+3)*10, -13+rnd(seed,i+5)*26, -32+rnd(seed,i+8)*8, seed+20+i, 2.6);
+  } else if(ch.hair==='ink'){
+    ctx.globalAlpha = 0.85; ctx.fillStyle = ch.hairColor;
+    ctx.beginPath(); ctx.arc(0,-33, 12.5, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(-9,-24, 3, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(8,-22, 2.4, 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.beginPath(); ctx.arc(0,-27, 14, Math.PI*1.02, Math.PI*1.98); ctx.stroke();
+  }
+
+  // face
+  const blink = opts.blink;
+  pencil(1, 2, INK);
+  ctx.fillStyle = INK;
+  if(blink){
+    sketchLine(-6,-26,-3,-26, seed+30, 0.5); sketchLine(3,-26,6,-26, seed+31, 0.5);
+  } else {
+    ctx.beginPath(); ctx.arc(-4.5,-26, 1.8, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(4.5,-26, 1.8, 0, Math.PI*2); ctx.fill();
+  }
+  const mood = opts.mood || 'smile';
+  ctx.beginPath();
+  if(mood==='grin'){ ctx.arc(0,-20.5, 5.5, 0.15, Math.PI-0.15); ctx.stroke();
+    pencil(0.7,1.4,'#d66969'); ctx.beginPath(); ctx.arc(-9,-21,2.4,0,Math.PI*2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(9,-21,2.4,0,Math.PI*2); ctx.stroke(); }
+  else if(mood==='oh'){ sketchCircle(0,-19.5, 3.2, seed+33, 0.4); }
+  else { ctx.arc(0,-21.5, 4.5, 0.35, Math.PI-0.35); ctx.stroke(); }
+
+  ctx.restore();
+  ctx.globalAlpha = 1;
+}
+
+/* locked girls show only their OUTER outline — a pure solid shadow.
+   We draw the girl offscreen, threshold her alpha, then flood-fill the
+   outside so every enclosed hole (shirt icons, hair gaps, face) becomes
+   part of one flat shape. The reveal is the reward. */
+let silCache = {};
+function drawGirlSilhouette(x, y, chId, scale){
+  const key = chId + '|' + savePaperKey();
+  let c = silCache[key];
+  if(!c){
+    c = document.createElement('canvas');
+    c.width = 96; c.height = 128;
+    const sc = c.getContext('2d');
+    const main = ctx;
+    ctx = sc;
+    ctx.translate(48, 82);
+    drawGirl(0, 0, CHARACTERS[chId], 1, 1, null, {mood:'smile'});
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx = main;
+    const Wp = 96, Hp = 128;
+    const img = sc.getImageData(0, 0, Wp, Hp);
+    const a = img.data;
+    const solid = new Uint8Array(Wp*Hp);
+    for(let i=0;i<Wp*Hp;i++) solid[i] = a[i*4+3] > 12 ? 1 : 0;
+    // flood the OUTSIDE from every border pixel; whatever isn't reached is her
+    const outside = new Uint8Array(Wp*Hp);
+    const stack = [];
+    for(let xx=0; xx<Wp; xx++){ stack.push(xx, xx + (Hp-1)*Wp); }
+    for(let yy=0; yy<Hp; yy++){ stack.push(yy*Wp, yy*Wp + Wp-1); }
+    while(stack.length){
+      const i = stack.pop();
+      if(i < 0 || i >= Wp*Hp || outside[i] || solid[i]) continue;
+      outside[i] = 1;
+      const xx = i % Wp;
+      if(xx > 0) stack.push(i-1);
+      if(xx < Wp-1) stack.push(i+1);
+      stack.push(i-Wp, i+Wp);
+    }
+    const col = savePaperKey() === 'chalk' ? [215,222,215] : [152,160,172];
+    for(let i=0;i<Wp*Hp;i++){
+      a[i*4] = col[0]; a[i*4+1] = col[1]; a[i*4+2] = col[2];
+      a[i*4+3] = outside[i] ? 0 : 235;
+    }
+    sc.putImageData(img, 0, 0);
+    silCache[key] = c;
+  }
+  ctx.save();
+  ctx.globalAlpha = 0.75;
+  ctx.drawImage(c, x - 48*scale, y - 82*scale, 96*scale, 128*scale);
+  ctx.restore();
+}
+
+function drawPlayer(){
+  const ch = CHARACTERS[save.selected] || CHARACTERS.muntaha;
+  const mood = player.grinT>0 ? 'grin' : (player.vy > 520 ? 'oh' : 'smile');
+  drawGirl(player.x, sy(player.y), ch, 1, player.squash, worldLimbs(), {
+    mood, blink: player.blinkT < 0, flip: player.faceDir
+  });
+  // magnet aura
+  if(player.magnetT > 0){
+    pencil(0.35 + 0.15*Math.sin(time*8), 2, '#4a86c9');
+    sketchCircle(player.x, sy(player.y)-6, 42 + Math.sin(time*6)*4, 77);
+    drawMagnet(player.x + 24, sy(player.y) - 38, 10, 78);
+  }
+}
+function worldLimbs(){
+  // limbs are stored in world coords; shift to screen coords for drawing
+  const out = {};
+  for(const k in player.limbs){
+    const l = player.limbs[k];
+    out[k] = { init:l.init, e:{x:l.e.x, y:sy(l.e.y)}, h:{x:l.h.x, y:sy(l.h.y)} };
+  }
+  return out;
+}
+
+/* ---- HUD: the quest bar from the top of Anya's drawing ---- */
+function drawQuestIcon(t, x, y, s){
+  if(t==='coin') drawCoin(x,y,s*0.5, 41);
+  if(t==='key') drawKey(x,y,s*0.9, 42);
+  if(t==='magnet') drawMagnet(x,y,s*0.8, 43);
+  if(t==='colorbox') drawColorBox(x,y,s*0.9, 44);
+  if(t==='star') drawStar(x,y,s*0.55, 45);
+  if(t==='bubbles'){ pencil(0.9,2); sketchCircle(x,y,s*0.5,46); pencil(0.6,1.6); ctx.beginPath(); ctx.arc(x-s*0.18,y-s*0.15,s*0.2,Math.PI*0.9,Math.PI*1.5); ctx.stroke(); }
+  if(t==='climb'){ pencil(0.9,2.2); sketchLine(x,y+s*0.45,x,y-s*0.5,47,0.7); sketchLine(x-s*0.3,y-s*0.15,x,y-s*0.5,48,0.7); sketchLine(x+s*0.3,y-s*0.15,x,y-s*0.5,49,0.7); }
+  if(t==='movers'){ hatchRect(x-s*0.5,y-s*0.2,s,s*0.4,PAL().main,0.5); pencil(0.9,1.8); sketchRect(x-s*0.5,y-s*0.2,s,s*0.4,50); sketchLine(x-s*0.75,y,x-s*0.55,y,51,0.5); sketchLine(x+s*0.55,y,x+s*0.75,y,52,0.5); }
+  if(t==='bookmarks'){ hatchRect(x-s*0.28,y-s*0.5,s*0.56,s,'#d66969',0.6); pencil(0.9,1.8); sketchRect(x-s*0.28,y-s*0.5,s*0.56,s,53); sketchLine(x-s*0.28,y+s*0.5,x,y+s*0.2,54,0.5); sketchLine(x,y+s*0.2,x+s*0.28,y+s*0.5,55,0.5); }
+  if(t==='noFall'){ pencil(0.95,2,'#d66969'); ctx.beginPath(); ctx.moveTo(x,y+s*0.45); ctx.bezierCurveTo(x-s*0.65,y-s*0.15,x-s*0.3,y-s*0.55,x,y-s*0.15); ctx.bezierCurveTo(x+s*0.3,y-s*0.55,x+s*0.65,y-s*0.15,x,y+s*0.45); ctx.stroke(); }
+}
+function drawHUD(){
+  // torn sticky-note bar
+  ctx.globalAlpha = 1; ctx.fillStyle = PAPER().hud;
+  ctx.fillRect(0,0,W,64);
+  pencil(0.6, 1.6);
+  sketchLine(0,64, W,64, 91, 2);
+
+  const qs = activeQuests();
+  for(let i=0;i<3;i++){
+    const cx = 90 + i*105;
+    const done = save.questProgress[i] >= qs[i].n;
+    pencil(0.9, 2);
+    sketchCircle(cx, 30, 24, 92+i);
+    drawQuestIcon(qs[i].t, cx, 26, 22);
+    scribbleText(save.questProgress[i] + '/' + qs[i].n, cx, 50, 14, {color: done?'#4f9e58':INK, bold:done});
+    if(done){
+      pencil(1, 3, '#4f9e58');
+      sketchLine(cx+12, 12, cx+18, 20, 95+i, 1);
+      sketchLine(cx+18, 20, cx+30, 4, 96+i, 1);
+    }
+    if(questFlash[i] > 0){
+      pencil(questFlash[i], 2, '#e2b33c');
+      sketchCircle(cx, 30, 28 + (0.8-questFlash[i])*22, 97+i);
+    }
+  }
+  // coins, keys, rainbow drops
+  drawCoin(28, 22, 10, 45);
+  scribbleText(save.coins, 28, 45, 14, {bold:true});
+  drawKey(426, 18, 16, 46);
+  scribbleText(save.keysHeld, 450, 19, 14, {bold:true});
+  if(save.rainbowDrops > 0){
+    drawDrop(428, 44, 9, 47);
+    scribbleText(save.rainbowDrops, 450, 45, 14, {bold:true});
+  }
+
+  // level + stopwatch under the bar
+  if(state === 'play' || state === 'fell'){
+    scribbleText('Lv ' + curLevel, 30, 82, 15, {alpha:0.6, bold:true});
+    scribbleText('⏱ ' + fmtTime(roundTime), 30, 104, 14, {alpha:0.55, align:'center'});
+    if(save.bestTime[curLevel])
+      scribbleText('best ' + fmtTime(save.bestTime[curLevel]), 34, 124, 12, {alpha:0.4});
+  }
+
+  // mute
+  uiButtons.push({x:W-38, y:H-40, w:34, h:34, cb:()=>{ muted=!muted; save.muted=muted; persist(); }});
+  scribbleText(muted?'🔇':'🔊', W-21, H-22, 20, {alpha:0.7});
+
+  // quest-board banner
+  if(setBanner > 0){
+    const a = Math.min(1, setBanner);
+    ctx.globalAlpha = a;
+    scribbleText(setBannerText || 'QUEST BOARD DONE!', W/2, 110, 24, {color:'#4f9e58', bold:true, outline:true, rot:-0.03});
+    scribbleText('New quests on the board!', W/2, 140, 17, {color:INK, outline:true});
+    ctx.globalAlpha = 1;
+  }
+
+  // touch hints
+  if(isTouch && state==='play'){
+    ctx.globalAlpha = 0.25;
+    scribbleText('◀', 40, H-50, 42);
+    scribbleText('▶', W-70, H-50, 42);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---- particles & floaties ---- */
+function drawFX(){
+  for(const p of particles){
+    ctx.globalAlpha = Math.max(0, p.life*1.6);
+    ctx.fillStyle = p.color;
+    ctx.fillRect(p.x-2, sy(p.y)-2, 4,4);
+  }
+  ctx.globalAlpha = 1;
+  for(const f of floaties){
+    scribbleText(f.txt, f.x, sy(f.y), 17, {color:f.color, bold:true, outline:true, alpha:Math.min(1,f.life*1.5)});
+  }
+  if(wash){
+    const r = wash.t * 900;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, 0.35 * (1.6-wash.t));
+    ctx.fillStyle = PAL().main;
+    ctx.beginPath(); ctx.arc(wash.x, sy(wash.y), r, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+/* ---- buttons ---- */
+function drawButton(label, x, y, w, h, cb, opts){
+  opts = opts || {};
+  ctx.globalAlpha = 0.9; ctx.fillStyle = opts.fill || '#fdfbf2';
+  ctx.fillRect(x,y,w,h); ctx.globalAlpha = 1;
+  pencil(0.95, 2.4, opts.ink || INK);
+  sketchRect(x,y,w,h, label.length*17);
+  scribbleText(label, x+w/2, y+h/2+1, opts.size || 22, {color:opts.ink||INK, bold:true});
+  uiButtons.push({x,y,w,h,cb});
+}
+
+/* ---- screens ---- */
+/* ---- first launch: who is playing? ---- */
+function drawWho(){
+  drawPaper(time*-20);
+  scribbleText('Whose notebook', W/2, 130, 36, {bold:true, rot:-0.02});
+  scribbleText('is this?', W/2, 175, 36, {bold:true, rot:0.015});
+  drawButton('Muntaha', W/2-105, 270, 210, 64, ()=>{ registerPlayer('Muntaha'); }, {size:26, ink:'#e2699e'});
+  drawButton('Anya', W/2-105, 356, 210, 64, ()=>{ registerPlayer('Anya'); }, {size:26, ink:'#8a6bc1'});
+  drawButton('Papa', W/2-105, 442, 210, 64, ()=>{ registerPlayer('Papa'); }, {size:26, ink:'#4a86c9'});
+  drawButton('someone else...', W/2-110, 530, 220, 50, ()=>{
+    const nm = (window.prompt('What is your name?') || '').trim().slice(0,16);
+    if(nm) registerPlayer(nm);
+  }, {size:17});
+  scribbleText('your game saves on this device, under your name', W/2, 630, 13, {alpha:0.55});
+}
+
+function drawTitle(){
+  drawPaper(time*-30);
+  // floating doodle bubbles
+  for(let i=0;i<7;i++){
+    const bx = 60 + rnd(5,i)*360, by = (rnd(6,i)*900 + time*22*(0.5+rnd(7,i))) % 900 - 50;
+    pencil(0.4, 1.8);
+    sketchCircle(bx, H-by, 16+rnd(8,i)*18, 50+i);
+  }
+  scribbleText('Muntaha & Anya’s', W/2, 120, 44, {bold:true, rot:-0.03, color:INK});
+  scribbleText('NOTEBOOK', W/2, 172, 52, {bold:true, rot:0.015, color:'#d66969'});
+  scribbleText('~ Bubble Hop: Paper Jump ~', W/2, 218, 20, {color:'#4a86c9', rot:0.02});
+  scribbleText('game designed by Anya  ✏️', W/2, 250, 16, {alpha:0.7});
+
+  // the two girls hopping on the title
+  const hop1 = Math.abs(Math.sin(time*2.4))*46;
+  const hop2 = Math.abs(Math.sin(time*2.4+1.2))*46;
+  drawGirl(W/2-70, 430-hop1, CHARACTERS.muntaha, 1.3, 1, null, {mood:'grin'});
+  drawGirl(W/2+70, 430-hop2, CHARACTERS.anya, 1.3, 1, null, {mood:'smile'});
+  pencil(0.5,2); sketchLine(W/2-130, 452, W/2+130, 452, 60, 2);
+
+  drawButton('PLAY!', W/2-90, 490, 180, 60, ()=>{ state='map'; }, {size:30, ink:'#4f9e58'});
+  drawButton('GIRLS', W/2-160, 566, 150, 48, ()=>{ state='select'; }, {size:20});
+  drawButton('SHOP', W/2+10, 566, 150, 48, ()=>{ state='shop'; }, {size:20, ink:'#c9931f'});
+  scribbleText('⬅ ➡ or A/D to move  •  tap left / right on touch', W/2, 650, 14, {alpha:0.65});
+  scribbleText('Bubbles pop 10 seconds after you first touch them!', W/2, 673, 14, {alpha:0.65});
+  if(save.bestHeight>0) scribbleText('best height ever: ' + save.bestHeight + ' m', W/2, 700, 13, {alpha:0.5});
+  if(PLAYER_TAG){
+    scribbleText(PLAYER_TAG + ' is playing', 84, H-30, 13, {alpha:0.55});
+    drawButton('not you?', 20, H-64, 90, 26, ()=>{
+      try{ localStorage.removeItem(NAME_KEY); }catch(e){}
+      location.reload();
+    }, {size:12});
+  }
+}
+
+/* ---- level map: a pencil trail up the page ---- */
+function drawMap(){
+  drawPaper(-time*10);
+  scribbleText('Pick a page!', W/2, 60, 34, {bold:true, rot:-0.02});
+  const pos = [];
+  for(let lv=1; lv<=20; lv++){
+    const row = Math.floor((lv-1)/4);
+    const col = (lv-1)%4;
+    const x = (row%2===0) ? 80 + col*107 : 401 - col*107;   // snake up the page
+    const y = 690 - row*128;
+    pos.push({lv,x,y});
+  }
+  // dotted trail (trimmed so it never crosses the page-number circles)
+  pencil(0.4, 2);
+  for(let i=0;i<pos.length-1;i++){
+    const a = pos[i], b = pos[i+1];
+    const dx = b.x-a.x, dy = b.y-a.y, len = Math.hypot(dx,dy) || 1;
+    const ax = a.x + dx/len*32, ay = a.y + dy/len*32;
+    const bx = b.x - dx/len*32, by = b.y - dy/len*32;
+    const steps = 4;
+    for(let s=0;s<steps;s+=2){
+      const t1 = s/steps, t2 = (s+1)/steps;
+      sketchLine(ax+(bx-ax)*t1, ay+(by-ay)*t1, ax+(bx-ax)*t2, ay+(by-ay)*t2, i*10+s, 1);
+    }
+  }
+  for(const nd of pos){
+    const done = save.levelsDone[nd.lv];
+    const open = nd.lv <= save.levelReached;
+    const isNext = nd.lv === save.levelReached && !done;
+    if(done) hatchCircle(nd.x, nd.y, 22, '#4f9e58', 0.35);
+    else if(open) hatchCircle(nd.x, nd.y, 22, '#e2b33c', 0.3);
+    pencil(open?0.95:0.4, isNext?3:2, open?INK:undefined);
+    sketchCircle(nd.x, nd.y, 24 + (isNext ? Math.sin(time*4)*2.5 : 0), nd.lv*3);
+    scribbleText(nd.lv, nd.x, nd.y+1, 20, {bold:open, alpha:open?1:0.4});
+    if(done){
+      pencil(1, 2.6, '#4f9e58');
+      sketchLine(nd.x+12, nd.y-16, nd.x+17, nd.y-10, nd.lv*3+1, 1);
+      sketchLine(nd.x+17, nd.y-10, nd.x+26, nd.y-24, nd.lv*3+2, 1);
+    }
+    if(!open){
+      pencil(0.45, 1.6);
+      sketchRect(nd.x-7, nd.y+26, 14, 11, nd.lv*3+3);
+      ctx.beginPath(); ctx.arc(nd.x, nd.y+26, 5, Math.PI, 0); ctx.stroke();
+    }
+    if(save.bestTime[nd.lv])
+      scribbleText(fmtTime(save.bestTime[nd.lv]), nd.x, nd.y+38, 11, {alpha:0.55, color:'#4a86c9'});
+    if(open) uiButtons.push({x:nd.x-26, y:nd.y-26, w:52, h:52, cb:()=>{ startRound(nd.lv); }});
+  }
+  drawButton('back', 20, H-58, 90, 40, ()=>{ state='title'; }, {size:16});
+  scribbleText('playing as ' + (CHARACTERS[save.selected]||CHARACTERS.muntaha).name, W-120, H-36, 14, {alpha:0.6});
+}
+
+/* ---- character select: the whole crew ---- */
+let selInfo = null;
+function drawSelect(){
+  drawPaper(0);
+  scribbleText('Who’s jumping?', W/2, 56, 32, {bold:true, rot:-0.02});
+  const roster = KNOWN_ORDER.slice();
+  if(save.secretsRevealed || save.unlocked.doodle) roster.push('doodle');
+  if(save.secretsRevealed || save.unlocked.inky) roster.push('inky');
+  roster.forEach((id, i)=>{
+    const ch = CHARACTERS[id];
+    const col = i%3, row = Math.floor(i/3);
+    const x = 26 + col*146, w = 134, h = 148;
+    const y = 88 + row*160;
+    const unlocked = !!save.unlocked[id];
+    const sel = save.selected === id;
+    const isSecretCard = ch.secret && !unlocked;
+    ctx.globalAlpha = unlocked ? 0.92 : 0.6;
+    ctx.fillStyle = sel ? '#fdf4d8' : PAPER().hud;
+    ctx.fillRect(x,y,w,h); ctx.globalAlpha = 1;
+    pencil(sel?1:0.6, sel?3:2, sel?'#c9931f':INK);
+    sketchRect(x,y,w,h, 70+i);
+    if(isSecretCard){
+      scribbleText('?', x+w/2, y+62, 44, {alpha:0.35, bold:true});
+      scribbleText('a secret friend...', x+w/2, y+120, 12, {alpha:0.45});
+    } else if(unlocked){
+      drawGirl(x+w/2, y+78, ch, 1.15, 1, null, {mood: sel?'grin':'smile'});
+      scribbleText(ch.name, x+w/2, y+126, 18, {bold:true, color:ch.tint});
+    } else {
+      drawGirlSilhouette(x+w/2, y+72, id, 1.05);
+      pencil(0.6,1.8);
+      sketchRect(x+w-28, y+8, 16, 12, 85+i);
+      ctx.beginPath(); ctx.arc(x+w-20, y+8, 6, Math.PI, 0); ctx.stroke();
+      scribbleText(ch.name, x+w/2, y+112, 16, {alpha:0.6, bold:true});
+      if(ch.needPieces) scribbleText('▣'.repeat(save.pieces[id]||0) + '□'.repeat(Math.max(0, ch.needPieces-(save.pieces[id]||0))), x+w/2, y+132, 14, {color:ch.tint});
+    }
+    uiButtons.push({x,y,w,h, cb:()=>{
+      selInfo = id;
+      if(unlocked){ save.selected = id; persist(); SFX.coin(); }
+    }});
+  });
+  // info strip: tapped girl's power (or how to free her)
+  const iy = 88 + Math.ceil(roster.length/3)*160 + 4;
+  if(selInfo && save.unlocked[selInfo]){
+    const ch = CHARACTERS[selInfo];
+    ctx.globalAlpha = 0.92; ctx.fillStyle = PAPER().hud; ctx.fillRect(20, iy, W-40, 96); ctx.globalAlpha = 1;
+    pencil(0.8, 2, ch.tint); sketchRect(20, iy, W-40, 96, 300);
+    scribbleText(ch.name + '’s power:', W/2, iy+26, 17, {bold:true, color:ch.tint});
+    scribbleText(ch.desc, W/2, iy+52, 16);
+    if(save.selected === selInfo)
+      scribbleText('✓ she’s ready to jump!', W/2, iy+78, 13, {color:'#4f9e58'});
+  } else if(selInfo && !save.unlocked[selInfo]){
+    const ch = CHARACTERS[selInfo];
+    ctx.globalAlpha = 0.92; ctx.fillStyle = PAPER().hud; ctx.fillRect(20, iy, W-40, 96); ctx.globalAlpha = 1;
+    pencil(0.8, 2); sketchRect(20, iy, W-40, 96, 300);
+    if(ch.secret){
+      scribbleText('shhh... you’ll know her when you find her!', W/2, iy+48, 16, {alpha:0.7});
+    } else {
+      scribbleText('How to unlock ' + ch.name + ':', W/2, iy+22, 16, {bold:true});
+      scribbleText(ch.hint, W/2, iy+46, 14, {alpha:0.8});
+      if(ch.price){
+        const afford = save.coins >= ch.price;
+        scribbleText('or buy: ' + ch.price + ' coins', W/2 - 60, iy+74, 14, {color:afford?'#4f9e58':'#d66969'});
+        if(afford) drawButton('BUY!', W/2 + 60, iy+58, 90, 32, ()=>{
+          save.coins -= ch.price; save.unlocked[selInfo] = true; persist();
+          celebration = {char:selInfo}; stateReturn = 'select'; state = 'friend'; SFX.chest();
+        }, {size:16, ink:'#4f9e58'});
+      }
+    }
+  } else {
+    scribbleText('finish quest boards, open chests, brave the risky routes!', W/2, iy+30, 13, {alpha:0.55});
+  }
+  drawButton('back', 20, H-58, 90, 40, ()=>{ selInfo=null; state='title'; }, {size:16});
+  drawButton('PLAY!', W-170, H-66, 150, 50, ()=>{ selInfo=null; state='map'; }, {size:22, ink:'#4f9e58'});
+}
+
+/* ---- shop: friends + places ---- */
+let shopInfo = null;
+function drawShop(){
+  drawPaper(0);
+  scribbleText('The Shop', W/2, 54, 34, {bold:true, rot:-0.02});
+  drawCoin(W/2-52, 88, 10, 45);
+  scribbleText(save.coins + ' coins', W/2+14, 88, 17, {bold:true});
+  // friends for (a lot of) coins
+  scribbleText('friends (earning them is cheaper!):', W/2, 128, 15, {alpha:0.7});
+  const buyable = ['zoya','aisha','lily','luna'].filter(id=>!save.unlocked[id]);
+  if(!buyable.length) scribbleText('all your known friends are unlocked! 🎉', W/2, 170, 15, {color:'#4f9e58'});
+  buyable.forEach((id,i)=>{
+    const ch = CHARACTERS[id];
+    const x = 30 + i*108, y = 146, w = 98, h = 128;
+    ctx.globalAlpha = 0.7; ctx.fillStyle = PAPER().hud; ctx.fillRect(x,y,w,h); ctx.globalAlpha = 1;
+    pencil(0.6, 2); sketchRect(x,y,w,h, 400+i);
+    drawGirlSilhouette(x+w/2, y+56, id, 0.9);
+    scribbleText(ch.name, x+w/2, y+92, 14, {bold:true});
+    const afford = save.coins >= ch.price;
+    scribbleText(ch.price, x+w/2, y+112, 14, {color:afford?'#4f9e58':'#d66969', bold:true});
+    uiButtons.push({x,y,w,h, cb:()=>{
+      if(afford){
+        save.coins -= ch.price; save.unlocked[id] = true; persist();
+        celebration = {char:id}; stateReturn = 'shop'; state = 'friend'; SFX.chest();
+      } else floatText('not enough coins yet!', W/2, 300, '#d66969');
+    }});
+  });
+  // places (paper styles)
+  scribbleText('places (new paper for the whole game!):', W/2, 316, 15, {alpha:0.7});
+  Object.keys(PAPERS).forEach((k,i)=>{
+    const pp = PAPERS[k];
+    const col = i%3, row = Math.floor(i/3);
+    const x = 40 + col*140, y = 336 + row*118, w = 122, h = 100;
+    const owned = save.papers.includes(k);
+    const active = save.selectedPaper === k;
+    ctx.globalAlpha = 0.95; ctx.fillStyle = pp.bg; ctx.fillRect(x,y,w,h); ctx.globalAlpha = 1;
+    ctx.strokeStyle = pp.line; ctx.lineWidth = 1;
+    ctx.beginPath();
+    for(let yy=y+16; yy<y+h; yy+=14){ ctx.moveTo(x+4,yy); ctx.lineTo(x+w-4,yy); }
+    ctx.stroke();
+    pencil(active?1:0.6, active?3:2, active?'#c9931f':INK);
+    sketchRect(x,y,w,h, 500+i);
+    scribbleText(pp.name, x+w/2, y+30, 13, {bold:true, color:pp.ink});
+    if(active) scribbleText('★ in use', x+w/2, y+56, 12, {color:'#c9931f'});
+    else if(owned) scribbleText('tap to use!', x+w/2, y+56, 12, {color:pp.ink, alpha:0.7});
+    else scribbleText(pp.price + ' coins', x+w/2, y+56, 13, {color:save.coins>=pp.price?'#4f9e58':'#d66969', bold:true});
+    uiButtons.push({x,y,w,h, cb:()=>{
+      if(owned){ save.selectedPaper = k; persist(); applyPaper(); SFX.colorbox(); }
+      else if(save.coins >= pp.price){ save.coins -= pp.price; save.papers.push(k); save.selectedPaper = k; persist(); applyPaper(); SFX.chest(); }
+      else floatText('not enough coins yet!', W/2, 300, '#d66969');
+    }});
+  });
+  drawButton('back', 20, H-58, 90, 40, ()=>{ state='title'; }, {size:16});
+}
+
+function drawPlay(){
+  drawPaper(camY);
+  drawWindBands();
+  for(const p of level.plats){
+    if(p.type==='plat') drawPlat(p);
+    else if(p.type==='bubble') drawBubble(p);
+    else if(p.type==='bookmark') drawBookmark(p);
+    else if(p.type==='finish') drawFinish(p);
+  }
+  for(const it of level.items) drawItem(it);
+  drawSpinners();
+  drawBirds();
+  drawPlayer();
+  drawEraser();
+  drawFX();
+  drawHUD();
+  scribbleText(Math.max(0,-Math.round(player.y/10)) + ' m', W-36, 86, 16, {alpha:0.55});
+}
+
+/* ---- wandering-chest reveal ---- */
+function drawChestScreen(){
+  drawPlay();
+  ctx.globalAlpha = 0.8; ctx.fillStyle = PAPER().bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha = 1;
+  if(!chestReveal.start) chestReveal.start = time;
+  const t = time - chestReveal.start;
+  const open = t > 0.9;
+  const shakeX = open ? 0 : Math.sin(time*40)*4*(0.9-t);
+  drawChest(W/2 + shakeX, 320, 110, 200, open);
+  if(open){
+    // rays + reveal
+    pencil(0.4, 2, '#e2b33c');
+    for(let i=0;i<8;i++){
+      const a = i*Math.PI/4 + time*0.4;
+      sketchLine(W/2 + Math.cos(a)*80, 300 + Math.sin(a)*80, W/2 + Math.cos(a)*130, 300 + Math.sin(a)*130, 600+i, 1.4);
+    }
+    chestReveal.lines.forEach((ln, i)=>{
+      scribbleText(ln, W/2, 420 + i*34, i===0?26:20, {bold:i===0, color:i===0?'#c9931f':INK});
+    });
+    drawButton('YAY!', W/2-80, 560, 160, 54, ()=>{ chestReveal=null; state=stateReturn; }, {size:24, ink:'#4f9e58'});
+  } else {
+    scribbleText('opening...', W/2, 430, 20, {alpha:0.7});
+  }
+}
+
+/* ---- NEW FRIEND celebration ---- */
+function drawFriend(){
+  drawPaper(time*-40);
+  const ch = CHARACTERS[celebration.char];
+  for(let i=0;i<18;i++){
+    const cx = 30+rnd(21,i)*420, cyy = ((rnd(22,i)*800 + time*80)%820);
+    pencil(0.75, 2.2, ['#e2699e','#4a86c9','#e2b33c','#4f9e58','#8a6bc1'][i%5]);
+    sketchLine(cx, cyy, cx+9, cyy+9, 100+i, 1.5);
+  }
+  scribbleText('NEW FRIEND!', W/2, 140, 46, {bold:true, color:'#4f9e58', rot:-0.03, outline:true});
+  const hop = Math.abs(Math.sin(time*3))*30;
+  drawGirl(W/2, 360 - hop, ch, 2.1, 1, null, {mood:'grin'});
+  pencil(0.5,2); sketchLine(W/2-90, 392, W/2+90, 392, 61, 2);
+  scribbleText(ch.name + '!', W/2, 452, 38, {bold:true, color:ch.tint});
+  scribbleText(ch.desc, W/2, 492, 18, {alpha:0.85});
+  if(ch.secret) scribbleText('(she was hiding in the notebook all along!)', W/2, 520, 14, {alpha:0.6});
+  drawButton('PLAY AS HER!', W/2-190, 560, 180, 54, ()=>{
+    save.selected = celebration.char; persist();
+    celebration = null; state = stateReturn; SFX.coin();
+  }, {size:19, ink:'#4f9e58'});
+  drawButton('later', W/2+30, 560, 160, 54, ()=>{ celebration = null; state = stateReturn; }, {size:19});
+}
+
+/* ---- soft bookmark-fall screen ---- */
+function drawFell(){
+  drawPlay();
+  ctx.globalAlpha = 0.75; ctx.fillStyle = PAPER().bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha = 1;
+  scribbleText('Wheee... oops!', W/2, 210, 40, {bold:true, color:'#d66969', rot:-0.03});
+  scribbleText('Your bookmark saved your spot!', W/2, 260, 20, {color:'#4f9e58'});
+  // bookmark doodle
+  hatchRect(W/2-24, 300, 48, 84, '#4f9e58', 0.5);
+  pencil(0.95, 2.4);
+  sketchRect(W/2-24, 300, 48, 84, 700);
+  sketchLine(W/2-24, 384, W/2, 360, 701, 1);
+  sketchLine(W/2, 360, W/2+24, 384, 702, 1);
+  scribbleText('everything you collected is kept', W/2, 424, 15, {alpha:0.7});
+  scribbleText('⏱ ' + fmtTime(roundTime) + ' — the clock is still ticking!', W/2, 450, 14, {alpha:0.6});
+  drawButton('JUMP BACK IN!', W/2-110, 496, 220, 58, ()=>{ respawnAtBookmark(); }, {size:22, ink:'#4f9e58'});
+  drawButton('map', W/2-60, 574, 120, 42, ()=>{ state='map'; }, {size:17});
+}
+
+function drawWin(){
+  drawPlay();
+  ctx.globalAlpha = 0.84; ctx.fillStyle = PAPER().bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha = 1;
+  scribbleText('LEVEL ' + curLevel + ' COMPLETE!', W/2, 130, 38, {bold:true, color:'#4f9e58', rot:-0.03});
+  for(let i=0;i<14;i++){
+    const cx = 40+rnd(21,i)*400, cyy = 170 + ((rnd(22,i)*400 + time*60)%460);
+    pencil(0.7, 2, ['#e2699e','#4a86c9','#e2b33c','#4f9e58'][i%4]);
+    sketchLine(cx, cyy, cx+8, cyy+8, 100+i, 1.4);
+  }
+  if(winTimeInfo){
+    scribbleText('⏱ ' + fmtTime(winTimeInfo.t) + (winTimeInfo.isNew ? '  —  NEW BEST!' : '   (best ' + fmtTime(save.bestTime[curLevel]) + ')'),
+      W/2, 175, winTimeInfo.isNew ? 22 : 17,
+      {bold:winTimeInfo.isNew, color:winTimeInfo.isNew ? '#c9931f' : INK, alpha:winTimeInfo.isNew?1:0.75});
+  }
+  drawChest(W/2, 290, 84, 200, chestResult && (chestResult.opened || chestResult.ghost));
+  if(chestResult && chestResult.opened){
+    scribbleText('a key opened the chest!', W/2, 352, 19, {color:'#c9931f'});
+    scribbleText('+' + chestResult.coins + ' coins!', W/2, 382, 28, {bold:true, color:'#c9931f'});
+  } else if(chestResult && chestResult.ghost){
+    scribbleText('this chest was already opened', W/2, 352, 16, {alpha:0.55});
+    scribbleText('(one treasure per page!)', W/2, 376, 14, {alpha:0.5});
+  } else {
+    scribbleText('the chest is locked...', W/2, 352, 19, {alpha:0.7});
+    scribbleText('bring a key next time!', W/2, 378, 16, {alpha:0.6});
+  }
+  scribbleText('coins this round: ' + roundCoins + '   height: ' + heightClimbed + ' m', W/2, 434, 16, {alpha:0.8});
+  if(curLevel < 20 && save.levelReached > curLevel){
+    drawButton('NEXT LEVEL →', W/2-115, 476, 230, 58, ()=>{ startRound(curLevel+1); }, {size:23, ink:'#4f9e58'});
+    drawButton('replay', W/2-140, 552, 130, 44, ()=>{ startRound(curLevel); }, {size:17});
+    drawButton('map', W/2+10, 552, 130, 44, ()=>{ state='map'; }, {size:17});
+  } else {
+    drawButton('PLAY AGAIN', W/2-110, 476, 220, 56, ()=>{ startRound(curLevel); }, {size:23, ink:'#4f9e58'});
+    drawButton('map', W/2-60, 550, 120, 44, ()=>{ state='map'; }, {size:17});
+  }
+  if(curLevel === 20) scribbleText('YOU CLIMBED THE WHOLE NOTEBOOK!!', W/2, 630, 20, {color:'#8a6bc1', bold:true});
+}
+
+function drawDead(){
+  drawPlay();
+  ctx.globalAlpha = 0.78; ctx.fillStyle = PAPER().bg; ctx.fillRect(0,0,W,H); ctx.globalAlpha = 1;
+  scribbleText('Whoops!', W/2, 200, 48, {bold:true, color:'#d66969', rot:-0.04});
+  scribbleText('You slipped off the page!', W/2, 250, 22);
+  drawGirl(W/2, 340, CHARACTERS[save.selected]||CHARACTERS.muntaha, 1.6, 1, null, {mood:'oh'});
+  scribbleText('height: ' + heightClimbed + ' m   coins kept: +' + roundCoins, W/2, 430, 17, {alpha:0.8});
+  scribbleText('reach a bookmark ledge to save your spot!', W/2, 460, 16, {color:'#4f9e58'});
+  drawButton('TRY AGAIN', W/2-110, 510, 220, 58, ()=>{ startRound(curLevel); }, {size:26, ink:'#4f9e58'});
+  drawButton('map', W/2-60, 590, 120, 44, ()=>{ state='map'; }, {size:18});
+}
+
+/* ---------------- main loop -------------------------------- */
+let last = performance.now();
+function frame(now){
+  let dt = Math.min(0.033, (now-last)/1000);
+  last = now;
+  update(dt);
+
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  if(shake>0) ctx.translate(jit(1,wob,4), jit(2,wob,4));
+  uiButtons = [];
+  if(state==='who') drawWho();
+  else if(state==='title') drawTitle();
+  else if(state==='map') drawMap();
+  else if(state==='select') drawSelect();
+  else if(state==='shop') drawShop();
+  else if(state==='play') drawPlay();
+  else if(state==='win') drawWin();
+  else if(state==='dead') drawDead();
+  else if(state==='fell') drawFell();
+  else if(state==='chest') drawChestScreen();
+  else if(state==='friend') drawFriend();
+
+  // floaties on menu screens too (shop "not enough coins" etc.)
+  if(state!=='play' && state!=='win' && state!=='dead' && state!=='fell' && state!=='chest'){
+    for(const f of floaties)
+      scribbleText(f.txt, f.x, f.y, 17, {color:f.color, bold:true, outline:true, alpha:Math.min(1,f.life*1.5)});
+    floaties = floaties.filter(f=>{ f.y -= 1; f.life -= dt; return f.life > 0; });
+  }
+
+  // mute toggle on menus too
+  if(state!=='play'){
+    uiButtons.push({x:W-38, y:H-40, w:34, h:34, cb:()=>{ muted=!muted; save.muted=muted; persist(); }});
+    scribbleText(muted?'🔇':'🔊', W-21, H-22, 20, {alpha:0.6});
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+/* debug/test handle */
+window.__bh = {
+  get player(){return player}, get save(){return save}, get level(){return level},
+  get state(){return state}, set state(v){state=v},
+  get curLevel(){return curLevel},
+  get paletteKey(){return paletteKey},
+  get roundTime(){return roundTime},
+  startRound, respawnAtBookmark, buildLevelRaw,
+  LEVEL_DEFS, CHARACTERS, QUEST_SETS, ACTION_SETS,
+  step(dt, n){ n = n||1; for(let i=0;i<n;i++) update(dt); }
+};
+</script>
+</body>
+</html>

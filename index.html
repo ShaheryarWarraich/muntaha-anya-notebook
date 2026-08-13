@@ -221,8 +221,8 @@ function beep(freq, dur, type, vol, slide){
   o.start(); o.stop(ac.currentTime+dur+0.02);
 }
 const SFX = {
-  boing(){ beep(190,0.22,'triangle',0.22, 240); },
-  bubble(){ beep(420,0.18,'sine',0.2, 260); },
+  boing(){ if(muteBounce) return; beep(190,0.22,'triangle',0.22, 240); },
+  bubble(){ if(muteBounce) return; beep(420,0.18,'sine',0.2, 260); },
   pop(){ beep(680,0.09,'square',0.12,-500); beep(240,0.12,'triangle',0.12,-120); },
   coin(){ beep(1150,0.09,'sine',0.16, 350); setTimeout(()=>beep(1560,0.12,'sine',0.13,200), 60); },
   key(){ beep(760,0.1,'triangle',0.18,0); setTimeout(()=>beep(1010,0.14,'triangle',0.15,150), 90); },
@@ -314,7 +314,7 @@ const SAVE_DEFAULTS = {
   levelReached: 1, levelsDone: {},
   secretsRevealed: false,
   stats: {playSec:0, levels:{}},   // lifetime play data (also what gets pushed to Papa)
-  bestHeight: 0, level1Done: false, muted: false
+  bestHeight: 0, level1Done: false, muted: false, muteBounce: false
 };
 let save = JSON.parse(JSON.stringify(SAVE_DEFAULTS));
 try{
@@ -328,6 +328,7 @@ try{
   }
 }catch(e){}
 muted = !!save.muted;
+let muteBounce = !!save.muteBounce;
 function persist(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(save)); }catch(e){} }
 
 /* ---------------- quests (top-of-page icons) ---------------- */
@@ -867,6 +868,11 @@ function respawnAtBookmark(){
   for(const k in player.limbs) player.limbs[k].init = false;
   camY = bm.y - H + 220;
   if(level.eraser) level.eraser.y = bm.y + 800;
+  // the page redraws itself: popped bubbles and crumbled platforms come back
+  for(const p of level.plats){
+    if(p.type === 'bubble'){ p.popped = false; p.timer = -1; p.rising = false; p.dy = 0; p.respawnT = 0; p.wobbleT = 0; }
+    if(p.crumble){ p.crumble.hits = 0; p.crumble.fallT = 0; }
+  }
   state = 'play';
 }
 
@@ -1077,7 +1083,7 @@ function update(dt){
           player.squash = p.tape ? 1.7 : 1.4;
           player.grinT = 0.4;
           if(p.move) questCollect('movers');
-          if(p.tape) beep(120, 0.25, 'sawtooth', 0.1, -40); else SFX.boing();
+          if(p.tape){ if(!muteBounce) beep(120, 0.25, 'sawtooth', 0.1, -40); } else SFX.boing();
           burst(player.x, top, '#b9b2a0', 4);
           if(p.crumble){
             p.crumble.hits++;
@@ -1927,9 +1933,14 @@ function drawHUD(){
       scribbleText('best ' + fmtTime(save.bestTime[curLevel]), 34, 124, 12, {alpha:0.4});
   }
 
-  // mute
+  // always-visible controls: home, bounce-sounds toggle, master sound toggle
+  uiButtons.push({x:6, y:H-40, w:36, h:36, cb:()=>{ state='title'; }});
+  scribbleText('🏠', 24, H-22, 20, {alpha:0.75});
+  uiButtons.push({x:W-78, y:H-40, w:34, h:34, cb:()=>{ muteBounce=!muteBounce; save.muteBounce=muteBounce; persist(); }});
+  scribbleText('🫧', W-61, H-22, 19, {alpha: muteBounce ? 0.3 : 0.75});
+  if(muteBounce){ pencil(0.8, 2.2, '#d66969'); sketchLine(W-72, H-12, W-50, H-32, 881, 0.8); }
   uiButtons.push({x:W-38, y:H-40, w:34, h:34, cb:()=>{ muted=!muted; save.muted=muted; persist(); }});
-  scribbleText(muted?'🔇':'🔊', W-21, H-22, 20, {alpha:0.7});
+  scribbleText(muted?'🔇':'🔊', W-21, H-22, 20, {alpha:0.75});
 
   // quest-board banner
   if(setBanner > 0){
@@ -1940,11 +1951,11 @@ function drawHUD(){
     ctx.globalAlpha = 1;
   }
 
-  // touch hints
+  // touch hints (clear of the corner buttons)
   if(isTouch && state==='play'){
     ctx.globalAlpha = 0.25;
-    scribbleText('◀', 40, H-50, 42);
-    scribbleText('▶', W-70, H-50, 42);
+    scribbleText('◀', 96, H-56, 42);
+    scribbleText('▶', W-116, H-56, 42);
     ctx.globalAlpha = 1;
   }
 }
@@ -2377,8 +2388,11 @@ function frame(now){
     floaties = floaties.filter(f=>{ f.y -= 1; f.life -= dt; return f.life > 0; });
   }
 
-  // mute toggle on menus too
+  // sound toggles on menus too
   if(state!=='play'){
+    uiButtons.push({x:W-78, y:H-40, w:34, h:34, cb:()=>{ muteBounce=!muteBounce; save.muteBounce=muteBounce; persist(); }});
+    scribbleText('🫧', W-61, H-22, 19, {alpha: muteBounce ? 0.25 : 0.6});
+    if(muteBounce){ pencil(0.7, 2.2, '#d66969'); sketchLine(W-72, H-12, W-50, H-32, 881, 0.8); }
     uiButtons.push({x:W-38, y:H-40, w:34, h:34, cb:()=>{ muted=!muted; save.muted=muted; persist(); }});
     scribbleText(muted?'🔇':'🔊', W-21, H-22, 20, {alpha:0.6});
   }

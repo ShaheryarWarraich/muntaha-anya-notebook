@@ -779,12 +779,12 @@ function makeLimb(len1, len2){
 const player = {
   x:240, y:-40, vx:0, vy:0, r:15,
   squash:1, grinT:0, blinkT:2, faceDir:1,
-  magnetT:0, alive:true,
+  magnetT:0, stickyT:0, alive:true,
   limbs:{ armL:makeLimb(13,12), armR:makeLimb(13,12), legL:makeLimb(13,12), legR:makeLimb(13,12) }
 };
 function resetPlayer(){
   player.x = 240; player.y = -40; player.vx = 0; player.vy = -200;
-  player.squash = 1; player.magnetT = 0; player.alive = true; player.grinT = 0;
+  player.squash = 1; player.magnetT = 0; player.stickyT = 0; player.alive = true; player.grinT = 0;
   for(const k in player.limbs) player.limbs[k].init = false;
 }
 function limbUpdate(l, ax, ay, dt){
@@ -1021,7 +1021,9 @@ function update(dt){
   if(keys['ArrowRight']||keys['d']||keys['D']) dir += 1;
   if(touchDir) dir = touchDir;
   if(dir) player.faceDir = dir;
-  player.vx += dir * STEER * (ch.steer||1) * dt;
+  const sticky = player.stickyT > 0 ? 0.35 : 1;    // tape glue wears off quickly
+  if(player.stickyT > 0) player.stickyT -= dt;
+  player.vx += dir * STEER * (ch.steer||1) * sticky * dt;
   if(!dir) player.vx *= Math.pow(0.002, dt);       // friction
   player.vx = Math.max(-MAXVX, Math.min(MAXVX, player.vx));
 
@@ -1082,8 +1084,10 @@ function update(dt){
         if(prevFeet <= top + 6 && feet >= top &&
            Math.abs(player.x - px) < p.w/2 + player.r*0.7){
           player.y = top - player.r;
-          const bounceF = p.tape ? 0.62 : 1;               // sticky tape: schlorp
-          player.vy = -BOUNCE_V * (ch.bounce||1) * bounceF;
+          // sticky tape: FULL bounce height (never a dead end!) but gluey feet —
+          // steering goes sluggish for a moment after the schlorp
+          player.vy = -BOUNCE_V * (ch.bounce||1);
+          if(p.tape) player.stickyT = 0.9;
           player.vx += platVXAt(p, time) * 0.55;           // movers pass on momentum
           player.squash = p.tape ? 1.7 : 1.4;
           player.grinT = 0.4;
@@ -1865,6 +1869,13 @@ function drawPlayer(){
   drawGirl(player.x, sy(player.y), ch, 1, player.squash, worldLimbs(), {
     mood, blink: player.blinkT < 0, flip: player.faceDir
   });
+  // gluey tape strands on her feet while the schlorp wears off
+  if(player.stickyT > 0){
+    const fa = Math.min(1, player.stickyT * 2);
+    pencil(0.65 * fa, 2, '#c9a83c');
+    sketchLine(player.x - 8, sy(player.y) + 26, player.x - 5, sy(player.y) + 35, 55, 1.2);
+    sketchLine(player.x + 7, sy(player.y) + 26, player.x + 10, sy(player.y) + 34, 56, 1.2);
+  }
   // magnet aura
   if(player.magnetT > 0){
     pencil(0.35 + 0.15*Math.sin(time*8), 2, '#4a86c9');

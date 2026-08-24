@@ -247,8 +247,10 @@ try{
   PLAYER_TAG = localStorage.getItem(NAME_KEY) || '';
 }catch(e){}
 function registerPlayer(nm){
-  try{ localStorage.setItem(NAME_KEY, nm); }catch(e){}
-  location.reload();
+  let stored = false;
+  try{ localStorage.setItem(NAME_KEY, nm); stored = true; }catch(e){}
+  if(stored) location.reload();
+  else { PLAYER_TAG = nm; state = 'title'; }   // private mode: play anyway, no reload loop
 }
 const TELEMETRY_URL = ['https://ntfy.sh/', 'manote', 'book-papa-', '7kq2xv9r3m'].join('');
 const TQ_KEY = 'bubbleHopTQ' + (PLAYER_TAG ? '.' + PLAYER_TAG : '');
@@ -932,9 +934,12 @@ function tryOpenChest(it){
   }
   persist();
   SFX.chest();
-  chestReveal = {lines, t:0};
-  stateReturn = 'play';
-  state = 'chest';
+  // a piece inside may have just unlocked a friend — never clobber that celebration
+  if(state === 'play'){
+    chestReveal = {lines, t:0};
+    stateReturn = 'play';
+    state = 'chest';
+  }
 }
 
 /* ---------------- input ------------------------------------ */
@@ -2135,7 +2140,7 @@ function drawMap(){
     if(open) uiButtons.push({x:nd.x-26, y:nd.y-26, w:52, h:52, cb:()=>{ startRound(nd.lv); }});
   }
   drawButton('back', 20, H-58, 90, 40, ()=>{ state='title'; }, {size:16});
-  scribbleText('playing as ' + (CHARACTERS[save.selected]||CHARACTERS.muntaha).name, W-120, H-36, 14, {alpha:0.6});
+  scribbleText('playing as ' + (CHARACTERS[save.selected]||CHARACTERS.muntaha).name, W-150, H-64, 14, {alpha:0.6});
 }
 
 /* ---- character select: the whole crew ---- */
@@ -2314,6 +2319,7 @@ function drawChestScreen(){
 
 /* ---- NEW FRIEND celebration ---- */
 function drawFriend(){
+  if(!celebration){ state = 'title'; return; }
   drawPaper(time*-40);
   const ch = CHARACTERS[celebration.char];
   for(let i=0;i<18;i++){
@@ -2450,7 +2456,7 @@ window.__bh = {
   get curLevel(){return curLevel},
   get paletteKey(){return paletteKey},
   get roundTime(){return roundTime},
-  startRound, respawnAtBookmark, buildLevelRaw,
+  startRound, respawnAtBookmark, buildLevelRaw, tryOpenChest,
   LEVEL_DEFS, CHARACTERS, QUEST_SETS, ACTION_SETS,
   step(dt, n){ n = n||1; for(let i=0;i<n;i++) update(dt); }
 };
